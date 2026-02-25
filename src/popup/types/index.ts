@@ -26,6 +26,7 @@ export interface SaveResult {
   tabId: number;
   url: string;
   title: string;
+  favIconUrl?: string;
   error?: string;
 }
 
@@ -38,7 +39,7 @@ export interface SaveSummary {
   folderName: string;
 }
 
-export type AppView = "save" | "close" | "restore";
+export type AppView = "navigator" | "save" | "close" | "restore";
 
 export interface AppState {
   view: AppView;

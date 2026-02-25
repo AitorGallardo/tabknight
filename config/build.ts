@@ -50,6 +50,22 @@ async function build() {
     process.exit(1);
   }
 
+  // Build content script
+  const contentResult = await Bun.build({
+    entrypoints: [join(srcDir, "content/index.ts")],
+    outdir: join(distDir, "content"),
+    target: "browser",
+    format: "esm",
+    splitting: false,
+    minify: !isWatch,
+    sourcemap: isWatch ? "inline" : "none",
+  });
+
+  if (!contentResult.success) {
+    console.error("Content script build failed:", contentResult.logs);
+    process.exit(1);
+  }
+
   // Copy popup HTML
   await cp(join(srcDir, "popup/index.html"), join(distDir, "popup/index.html"));
 

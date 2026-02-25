@@ -44,7 +44,7 @@ export function TabList({
   }
 
   return (
-    <ScrollArea className="flex-1">
+    <ScrollArea className="flex-1 min-h-[200px] resize-y">
       {filteredGroups.map((group) => (
         <DomainGroup
           key={group.domain}

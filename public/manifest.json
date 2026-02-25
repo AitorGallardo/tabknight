@@ -1,13 +1,32 @@
 {
   "manifest_version": 3,
   "name": "TabKnight",
-  "version": "1.0.0",
+  "version": "0.13.0",
   "description": "Keyboard-first Chrome extension for tab management",
   "permissions": [
     "tabs",
     "bookmarks",
-    "activeTab"
+    "activeTab",
+    "windows",
+    "scripting"
   ],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/index.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "commands": {
+    "open_tab_navigator": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+K",
+        "mac": "Command+K"
+      },
+      "description": "Open TabKnight tab navigator"
+    }
+  },
   "action": {
     "default_popup": "popup/index.html",
     "default_icon": {

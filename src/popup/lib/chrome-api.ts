@@ -9,6 +9,14 @@ export async function getCurrentWindowTabs(): Promise<chrome.tabs.Tab[]> {
 }
 
 /**
+ * Get all normal tabs from all windows
+ */
+export async function getAllTabs(): Promise<chrome.tabs.Tab[]> {
+  const tabs = await chrome.tabs.query({});
+  return tabs.filter((tab) => tab.id !== undefined && tab.url && !isSystemUrl(tab.url));
+}
+
+/**
  * Process tabs: filter system tabs, extract domains, detect duplicates
  */
 export function processTabs(tabs: chrome.tabs.Tab[]): TabInfo[] {
@@ -38,6 +46,14 @@ export function processTabs(tabs: chrome.tabs.Tab[]): TabInfo[] {
 export async function closeTabs(tabIds: number[]): Promise<void> {
   if (tabIds.length === 0) return;
   await chrome.tabs.remove(tabIds);
+}
+
+/**
+ * Focus a tab and its window
+ */
+export async function activateTab(tabId: number, windowId: number): Promise<void> {
+  await chrome.windows.update(windowId, { focused: true });
+  await chrome.tabs.update(tabId, { active: true });
 }
 
 /**
@@ -121,6 +137,7 @@ export async function saveTabsAsBookmarks(
         tabId: tab.id,
         url: tab.url,
         title: tab.title,
+        favIconUrl: tab.favIconUrl,
       });
     } catch (error) {
       results.push({
@@ -128,6 +145,7 @@ export async function saveTabsAsBookmarks(
         tabId: tab.id,
         url: tab.url,
         title: tab.title,
+        favIconUrl: tab.favIconUrl,
         error: error instanceof Error ? error.message : "Unknown error",
       });
     }
@@ -174,4 +192,27 @@ export async function openUrlsAsTabs(urls: string[]): Promise<void> {
   for (const url of urls) {
     await chrome.tabs.create({ url, active: false });
   }
+}
+
+/**
+ * Open a new tab from a free-form query (URL or search)
+ */
+export async function openTabFromQuery(query: string): Promise<void> {
+  const trimmed = query.trim();
+
+  if (!trimmed) {
+    await chrome.tabs.create({ url: "chrome://newtab/", active: true });
+    return;
+  }
+
+  const hasProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(trimmed);
+  const looksLikeHost = /^[^\s]+\.[^\s]+$/.test(trimmed);
+
+  const url = hasProtocol
+    ? trimmed
+    : looksLikeHost
+      ? `https://${trimmed}`
+      : `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
+
+  await chrome.tabs.create({ url, active: true });
 }
