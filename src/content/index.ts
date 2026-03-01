@@ -67,7 +67,6 @@ function buildItems(): NavigatorItem[] {
       if (a.tab.windowId !== b.tab.windowId) return a.tab.windowId - b.tab.windowId;
       return a.tab.index - b.tab.index;
     })
-    .slice(0, 8)
     .map(({ tab, score }) => ({
       type: "tab" as const,
       id: `tab-${tab.id}`,
@@ -190,10 +189,10 @@ function styleText(): string {
       outline: none;
       background: transparent;
       color: rgba(245, 245, 248, 0.94);
-      font-size: 40px;
-      line-height: 1.08;
+      font-size: 28px;
+      line-height: 1.14;
       letter-spacing: -0.02em;
-      font-weight: 580;
+      font-weight: 560;
       caret-color: #43a7ff;
       font-family: "Inter", "SF Pro Display", "Segoe UI", sans-serif;
     }
@@ -220,10 +219,30 @@ function styleText(): string {
     .tk-list {
       padding: 8px;
       max-height: min(310px, calc(100vh - 190px));
-      overflow: auto;
+      overflow-y: auto;
+      overflow-x: hidden;
       display: flex;
       flex-direction: column;
       gap: 4px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+    }
+
+    .tk-list::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .tk-list::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .tk-list::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.18);
+      border-radius: 999px;
+    }
+
+    .tk-list::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.26);
     }
 
     .tk-item {
@@ -348,7 +367,7 @@ function styleText(): string {
       }
 
       .tk-input {
-        font-size: 23px;
+        font-size: 20px;
       }
 
       .tk-list {
@@ -461,8 +480,13 @@ function render(): void {
   `;
 
   const input = shadow.querySelector<HTMLInputElement>(".tk-input");
+  const activeItem = shadow.querySelector<HTMLElement>(".tk-item.active");
   input?.focus();
   input?.setSelectionRange(query.length, query.length);
+  activeItem?.scrollIntoView({
+    block: "nearest",
+    inline: "nearest",
+  });
 
   input?.addEventListener("input", (event) => {
     query = (event.currentTarget as HTMLInputElement).value;

@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Globe, Search } from "lucide-react";
+import { ArrowRight, Globe, Search, X } from "lucide-react";
 import { activateTab, getAllTabs, openTabFromQuery } from "../lib/chrome-api";
 
 interface TabNavigatorViewProps {
-  onOpenSaveFlow: () => void;
+  onOpenSaveFlow?: () => void;
+  showSaveButton?: boolean;
+  temporary?: boolean;
+  returnToTabId?: number | null;
 }
 
 interface NavigatorTab {
@@ -42,7 +45,12 @@ function scoreTab(tab: NavigatorTab, query: string): number {
   return score;
 }
 
-export function TabNavigatorView({ onOpenSaveFlow }: TabNavigatorViewProps) {
+export function TabNavigatorView({
+  onOpenSaveFlow,
+  showSaveButton = true,
+  temporary = false,
+  returnToTabId = null,
+}: TabNavigatorViewProps) {
   const [tabs, setTabs] = useState<NavigatorTab[]>([]);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -50,6 +58,7 @@ export function TabNavigatorView({ onOpenSaveFlow }: TabNavigatorViewProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   useEffect(() => {
     const loadTabs = async () => {
@@ -57,13 +66,22 @@ export function TabNavigatorView({ onOpenSaveFlow }: TabNavigatorViewProps) {
         setLoading(true);
         setError(null);
 
-        const [allTabs, currentWindow] = await Promise.all([getAllTabs(), chrome.windows.getCurrent()]);
+        const [allTabs, currentWindow, currentTab] = await Promise.all([
+          getAllTabs(),
+          chrome.windows.getCurrent(),
+          chrome.tabs.getCurrent().catch(() => undefined),
+        ]);
 
         setCurrentWindowId(currentWindow.id ?? null);
 
         const normalized = allTabs
           .filter((tab): tab is chrome.tabs.Tab & { id: number; windowId: number; url: string } => {
-            return tab.id !== undefined && tab.windowId !== undefined && !!tab.url;
+            return (
+              tab.id !== undefined &&
+              tab.windowId !== undefined &&
+              !!tab.url &&
+              tab.id !== currentTab?.id
+            );
           })
           .map((tab) => ({
             id: tab.id,
@@ -105,7 +123,6 @@ export function TabNavigatorView({ onOpenSaveFlow }: TabNavigatorViewProps) {
         if (a.tab.windowId !== b.tab.windowId) return a.tab.windowId - b.tab.windowId;
         return a.tab.index - b.tab.index;
       })
-      .slice(0, 6)
       .map(({ tab, score }) => ({ type: "tab" as const, id: `tab-${tab.id}`, tab, score }));
 
     if (!q) return ranked;
@@ -131,17 +148,69 @@ export function TabNavigatorView({ onOpenSaveFlow }: TabNavigatorViewProps) {
     }
   }, [items.length, activeIndex]);
 
+  useEffect(() => {
+    const activeItem = itemRefs.current[activeIndex];
+    if (!activeItem) return;
+
+    activeItem.scrollIntoView({
+      block: "nearest",
+      inline: "nearest",
+    });
+  }, [activeIndex, items.length]);
+
+  const closeCurrentNavigatorTab = async () => {
+    try {
+      const currentTab = await chrome.tabs.getCurrent();
+      if (currentTab?.id !== undefined) {
+        await chrome.tabs.remove(currentTab.id);
+        return;
+      }
+    } catch {
+      // Fall back to window.close below.
+    }
+
+    window.close();
+  };
+
+  const returnToOriginTab = async () => {
+    if (returnToTabId === null) return;
+
+    try {
+      const tab = await chrome.tabs.get(returnToTabId);
+      await chrome.windows.update(tab.windowId, { focused: true });
+      await chrome.tabs.update(tab.id!, { active: true });
+
+      if (typeof tab.index === "number") {
+        await chrome.tabs.highlight({ windowId: tab.windowId, tabs: tab.index });
+      }
+    } catch {
+      // The source tab may have been closed. Ignore and just close the navigator.
+    }
+  };
+
+  const dismissNavigator = async (restoreOrigin: boolean) => {
+    if (temporary) {
+      if (restoreOrigin) {
+        await returnToOriginTab();
+      }
+      await closeCurrentNavigatorTab();
+      return;
+    }
+
+    window.close();
+  };
+
   const executeItem = async (item: NavigatorItem | undefined) => {
     if (!item) return;
 
     if (item.type === "open") {
       await openTabFromQuery(query);
-      window.close();
+      await dismissNavigator(false);
       return;
     }
 
     await activateTab(item.tab.id, item.tab.windowId);
-    window.close();
+    await dismissNavigator(false);
   };
 
   const handleKeyDown = async (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -164,19 +233,16 @@ export function TabNavigatorView({ onOpenSaveFlow }: TabNavigatorViewProps) {
     }
 
     if (event.key === "Escape") {
-      window.close();
+      event.preventDefault();
+      await dismissNavigator(true);
     }
   };
 
   return (
-    <div
-      className="h-full w-full bg-[#07080c] text-[#f3f4f7]"
-      onKeyDown={(event) => {
-        void handleKeyDown(event);
-      }}
-    >
-      <div className="h-full w-full bg-[radial-gradient(120%_120%_at_60%_0%,rgba(66,47,29,0.35),transparent_65%)] p-2">
-        <div className="h-full rounded-2xl border border-white/15 bg-[linear-gradient(180deg,rgba(15,16,22,0.95),rgba(10,11,16,0.94))] shadow-[0_30px_80px_rgba(0,0,0,0.55)]">
+    <div className="h-full w-full text-[#f4f5f8]" onKeyDown={(event) => void handleKeyDown(event)}>
+      <div className="relative h-full w-full overflow-hidden rounded-[18px] border border-white/15 bg-[linear-gradient(180deg,rgba(16,18,25,0.74),rgba(10,12,18,0.72))] shadow-[0_32px_90px_rgba(0,0,0,0.48)] backdrop-blur-[22px]">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(62%_85%_at_74%_82%,rgba(104,54,18,0.17),transparent_66%),radial-gradient(58%_80%_at_28%_22%,rgba(38,56,122,0.14),transparent_70%)]" />
+        <div className="relative flex h-full flex-col">
           <div className="flex items-center gap-2 border-b border-white/10 px-3 py-3">
             <Search className="h-4 w-4 shrink-0 text-white/90" />
             <input
@@ -184,18 +250,32 @@ export function TabNavigatorView({ onOpenSaveFlow }: TabNavigatorViewProps) {
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Search or Enter URL..."
-              className="h-10 w-full border-none bg-transparent text-xl font-semibold tracking-[-0.02em] text-white outline-none placeholder:text-white/35"
+              className="h-10 w-full border-none bg-transparent text-[clamp(1.4rem,2vw,3.1rem)] font-semibold tracking-[-0.03em] text-white/92 outline-none placeholder:text-white/28"
               autoComplete="off"
               spellCheck={false}
               aria-label="Search tabs"
             />
-            <button
-              type="button"
-              onClick={onOpenSaveFlow}
-              className="rounded-md border border-white/20 px-2 py-1 text-[11px] text-white/80 hover:bg-white/10"
-            >
-              Save
-            </button>
+            {showSaveButton && onOpenSaveFlow && (
+              <button
+                type="button"
+                onClick={onOpenSaveFlow}
+                className="rounded-md border border-white/16 bg-black/10 px-2 py-1 text-[11px] text-white/78 hover:bg-white/10"
+              >
+                Save
+              </button>
+            )}
+            {temporary && (
+              <button
+                type="button"
+                onClick={() => {
+                  void dismissNavigator(true);
+                }}
+                className="grid h-7 w-7 place-items-center rounded-full border border-white/14 bg-black/20 text-white/78 hover:bg-white/10"
+                aria-label="Close navigator"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
 
           <div className="max-h-[420px] space-y-1 overflow-auto p-2">
@@ -216,13 +296,16 @@ export function TabNavigatorView({ onOpenSaveFlow }: TabNavigatorViewProps) {
               items.map((item, index) => {
                 const active = index === activeIndex;
                 const itemClass = active
-                  ? "bg-white/14 border-white/10"
-                  : "bg-transparent border-transparent hover:bg-white/8";
+                  ? "border-white/12 bg-white/14"
+                  : "border-transparent bg-transparent hover:bg-white/8";
 
                 if (item.type === "open") {
                   return (
                     <button
                       key={item.id}
+                      ref={(element) => {
+                        itemRefs.current[index] = element;
+                      }}
                       type="button"
                       onMouseEnter={() => setActiveIndex(index)}
                       onClick={() => {
@@ -231,13 +314,13 @@ export function TabNavigatorView({ onOpenSaveFlow }: TabNavigatorViewProps) {
                       className={`grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${itemClass}`}
                     >
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold text-white/95">{item.title}</div>
-                        <div className="truncate text-[11px] text-white/60">{item.subtitle}</div>
+                        <div className="truncate text-sm font-semibold text-white/94">{item.title}</div>
+                        <div className="truncate text-[11px] text-white/56">{item.subtitle}</div>
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="text-xs font-semibold text-white/80">Open</span>
-                        <span className="grid h-7 w-7 place-items-center rounded-md bg-white/15">
-                          <ArrowRight className="h-4 w-4 text-white/85" />
+                        <span className="text-xs font-semibold text-white/72">Open</span>
+                        <span className="grid h-8 w-8 place-items-center rounded-md bg-white/12">
+                          <ArrowRight className="h-4 w-4 text-white/88" />
                         </span>
                       </div>
                     </button>
@@ -247,6 +330,9 @@ export function TabNavigatorView({ onOpenSaveFlow }: TabNavigatorViewProps) {
                 return (
                   <button
                     key={item.id}
+                    ref={(element) => {
+                      itemRefs.current[index] = element;
+                    }}
                     type="button"
                     onMouseEnter={() => setActiveIndex(index)}
                     onClick={() => {
@@ -255,23 +341,28 @@ export function TabNavigatorView({ onOpenSaveFlow }: TabNavigatorViewProps) {
                     className={`grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${itemClass}`}
                   >
                     <div className="flex min-w-0 items-center gap-2">
-                      <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md bg-white/10 text-white/80">
+                      <span className="grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-md bg-white/8 text-white/80">
                         {item.tab.favIconUrl ? (
-                          <img src={item.tab.favIconUrl} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                          <img
+                            src={item.tab.favIconUrl}
+                            alt=""
+                            className="h-full w-full object-cover"
+                            referrerPolicy="no-referrer"
+                          />
                         ) : (
-                          <Globe className="h-3.5 w-3.5" />
+                          <Globe className="h-4 w-4" />
                         )}
                       </span>
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold text-white/95">{item.tab.title}</div>
-                        <div className="truncate text-[11px] text-white/55">{item.tab.url}</div>
+                        <div className="truncate text-sm font-semibold text-white/94">{item.tab.title}</div>
+                        <div className="truncate text-[11px] text-white/52">{item.tab.url}</div>
                       </div>
                     </div>
 
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold text-white/80">Switch to Tab</span>
-                      <span className="grid h-7 w-7 place-items-center rounded-md bg-white/15">
-                        <ArrowRight className="h-4 w-4 text-white/85" />
+                      <span className="text-xs font-semibold text-white/72">Switch to Tab</span>
+                      <span className="grid h-8 w-8 place-items-center rounded-md bg-white/12">
+                        <ArrowRight className="h-4 w-4 text-white/88" />
                       </span>
                     </div>
                   </button>

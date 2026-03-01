@@ -13,7 +13,7 @@ export async function getCurrentWindowTabs(): Promise<chrome.tabs.Tab[]> {
  */
 export async function getAllTabs(): Promise<chrome.tabs.Tab[]> {
   const tabs = await chrome.tabs.query({});
-  return tabs.filter((tab) => tab.id !== undefined && tab.url && !isSystemUrl(tab.url));
+  return tabs.filter((tab) => tab.id !== undefined && tab.url);
 }
 
 /**

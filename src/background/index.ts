@@ -3,22 +3,6 @@
 
 import { updateBadgeCount } from "../popup/lib/chrome-api";
 
-const SYSTEM_URL_PATTERNS = [
-  /^chrome:\/\//,
-  /^chrome-extension:\/\//,
-  /^about:/,
-  /^edge:\/\//,
-  /^brave:\/\//,
-  /^opera:\/\//,
-  /^vivaldi:\/\//,
-  /^file:\/\//,
-  /^devtools:\/\//,
-];
-
-function isSystemUrl(url: string): boolean {
-  return SYSTEM_URL_PATTERNS.some((pattern) => pattern.test(url));
-}
-
 function toQueryUrl(raw: string): string {
   const query = raw.trim();
   if (!query) return "chrome://newtab/";
@@ -70,6 +54,37 @@ async function ensureAndToggleNavigator(tabId: number): Promise<boolean> {
   }
 }
 
+async function openStandaloneNavigator(sourceTab?: chrome.tabs.Tab): Promise<void> {
+  const contextId = `navigator-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  let backgroundImage: string | undefined;
+
+  if (sourceTab?.windowId !== undefined) {
+    try {
+      backgroundImage = await chrome.tabs.captureVisibleTab(sourceTab.windowId, {
+        format: "png",
+      });
+    } catch {
+      // Capture is best-effort. It may fail on some contexts.
+    }
+  }
+
+  await chrome.storage.local.set({
+    [contextId]: {
+      backgroundImage,
+      returnToTabId: sourceTab?.id,
+      returnToWindowId: sourceTab?.windowId,
+      createdAt: Date.now(),
+    },
+  });
+
+  await chrome.tabs.create({
+    url: chrome.runtime.getURL(`popup/index.html?standalone=1&context=${encodeURIComponent(contextId)}`),
+    active: true,
+    ...(sourceTab?.windowId !== undefined ? { windowId: sourceTab.windowId } : {}),
+    ...(typeof sourceTab?.index === "number" ? { index: sourceTab.index + 1 } : {}),
+  });
+}
+
 // Update badge on startup
 chrome.runtime.onInstalled.addListener(() => {
   updateBadgeCount();
@@ -116,10 +131,18 @@ chrome.commands.onCommand.addListener(async (command) => {
     const opened = await ensureAndToggleNavigator(activeTab.id);
     if (opened) return;
   }
+
+  await openStandaloneNavigator(activeTab);
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const handle = async () => {
+    if (message?.type === "TAB_NAVIGATOR_OPEN_STANDALONE") {
+      await openStandaloneNavigator(sender.tab);
+      sendResponse({ ok: true });
+      return;
+    }
+
     if (message?.type === "TAB_NAVIGATOR_QUERY") {
       const [tabs, focusedWindow] = await Promise.all([
         chrome.tabs.query({}),
@@ -133,8 +156,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           (tab): tab is chrome.tabs.Tab & { id: number; windowId: number; url: string } =>
             tab.id !== undefined &&
             tab.windowId !== undefined &&
-            !!tab.url &&
-            !isSystemUrl(tab.url)
+            !!tab.url
         )
         .map((tab) => ({
           id: tab.id,
