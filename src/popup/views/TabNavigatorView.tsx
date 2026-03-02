@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Globe, Search, X } from "lucide-react";
 import { activateTab, getAllTabs, openTabFromQuery } from "../lib/chrome-api";
 
@@ -58,6 +58,7 @@ export function TabNavigatorView({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   useEffect(() => {
@@ -148,17 +149,41 @@ export function TabNavigatorView({
     }
   }, [items.length, activeIndex]);
 
-  useEffect(() => {
-    const activeItem = itemRefs.current[activeIndex];
-    if (!activeItem) return;
+  const focusInputAtEnd = useCallback(() => {
+    const input = inputRef.current;
+    if (!input) return;
 
-    activeItem.scrollIntoView({
-      block: "nearest",
-      inline: "nearest",
-    });
+    input.focus();
+    const nextCaret = input.value.length;
+    input.setSelectionRange(nextCaret, nextCaret);
+  }, []);
+
+  useEffect(() => {
+    const list = listRef.current;
+    const activeItem = itemRefs.current[activeIndex];
+    if (!list || !activeItem) return;
+
+    const topInset = 10;
+    const bottomInset = 26;
+    const itemTop = activeItem.offsetTop;
+    const itemBottom = itemTop + activeItem.offsetHeight;
+    const viewportTop = list.scrollTop;
+    const viewportBottom = viewportTop + list.clientHeight;
+
+    if (itemTop < viewportTop + topInset) {
+      list.scrollTop = Math.max(0, itemTop - topInset);
+      return;
+    }
+
+    if (itemBottom > viewportBottom - bottomInset) {
+      list.scrollTop = Math.min(
+        list.scrollHeight - list.clientHeight,
+        itemBottom - list.clientHeight + bottomInset
+      );
+    }
   }, [activeIndex, items.length]);
 
-  const closeCurrentNavigatorTab = async () => {
+  const closeCurrentNavigatorTab = useCallback(async () => {
     try {
       const currentTab = await chrome.tabs.getCurrent();
       if (currentTab?.id !== undefined) {
@@ -170,9 +195,9 @@ export function TabNavigatorView({
     }
 
     window.close();
-  };
+  }, []);
 
-  const returnToOriginTab = async () => {
+  const returnToOriginTab = useCallback(async () => {
     if (returnToTabId === null) return;
 
     try {
@@ -186,9 +211,9 @@ export function TabNavigatorView({
     } catch {
       // The source tab may have been closed. Ignore and just close the navigator.
     }
-  };
+  }, [returnToTabId]);
 
-  const dismissNavigator = async (restoreOrigin: boolean) => {
+  const dismissNavigator = useCallback(async (restoreOrigin: boolean) => {
     if (temporary) {
       if (restoreOrigin) {
         await returnToOriginTab();
@@ -198,9 +223,9 @@ export function TabNavigatorView({
     }
 
     window.close();
-  };
+  }, [closeCurrentNavigatorTab, returnToOriginTab, temporary]);
 
-  const executeItem = async (item: NavigatorItem | undefined) => {
+  const executeItem = useCallback(async (item: NavigatorItem | undefined) => {
     if (!item) return;
 
     if (item.type === "open") {
@@ -211,35 +236,76 @@ export function TabNavigatorView({
 
     await activateTab(item.tab.id, item.tab.windowId);
     await dismissNavigator(false);
-  };
+  }, [dismissNavigator, query]);
 
-  const handleKeyDown = async (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      setActiveIndex((prev) => Math.min(prev + 1, Math.max(0, items.length - 1)));
-      return;
-    }
+  useEffect(() => {
+    const handleGlobalKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const targetIsInput =
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.isContentEditable;
 
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      setActiveIndex((prev) => Math.max(prev - 1, 0));
-      return;
-    }
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
 
-    if (event.key === "Enter") {
-      event.preventDefault();
-      await executeItem(items[activeIndex]);
-      return;
-    }
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setActiveIndex((prev) => Math.min(prev + 1, Math.max(0, items.length - 1)));
+        focusInputAtEnd();
+        return;
+      }
 
-    if (event.key === "Escape") {
-      event.preventDefault();
-      await dismissNavigator(true);
-    }
-  };
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setActiveIndex((prev) => Math.max(prev - 1, 0));
+        focusInputAtEnd();
+        return;
+      }
+
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void executeItem(items[activeIndex]);
+        return;
+      }
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        void dismissNavigator(true);
+        return;
+      }
+
+      if (!targetIsInput && event.key === "Backspace") {
+        event.preventDefault();
+        setQuery((prev) => prev.slice(0, -1));
+        focusInputAtEnd();
+        return;
+      }
+
+      if (!targetIsInput && event.key.length === 1 && !event.repeat) {
+        event.preventDefault();
+        setQuery((prev) => prev + event.key);
+        focusInputAtEnd();
+      }
+    };
+
+    document.addEventListener("keydown", handleGlobalKeyDown, true);
+    return () => {
+      document.removeEventListener("keydown", handleGlobalKeyDown, true);
+    };
+  }, [activeIndex, dismissNavigator, executeItem, focusInputAtEnd, items]);
 
   return (
-    <div className="h-full w-full text-[#f4f5f8]" onKeyDown={(event) => void handleKeyDown(event)}>
+    <div
+      className="h-full w-full text-[#f4f5f8]"
+      onMouseDownCapture={(event) => {
+        const target = event.target as HTMLElement | null;
+        if (!target || target.closest("button") || target.tagName === "INPUT") return;
+
+        requestAnimationFrame(() => {
+          focusInputAtEnd();
+        });
+      }}
+    >
       <div className="relative h-full w-full overflow-hidden rounded-[18px] border border-white/15 bg-[linear-gradient(180deg,rgba(16,18,25,0.74),rgba(10,12,18,0.72))] shadow-[0_32px_90px_rgba(0,0,0,0.48)] backdrop-blur-[22px]">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(62%_85%_at_74%_82%,rgba(104,54,18,0.17),transparent_66%),radial-gradient(58%_80%_at_28%_22%,rgba(38,56,122,0.14),transparent_70%)]" />
         <div className="relative flex h-full flex-col">
@@ -250,7 +316,7 @@ export function TabNavigatorView({
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Search or Enter URL..."
-              className="h-10 w-full border-none bg-transparent text-[clamp(1.4rem,2vw,3.1rem)] font-semibold tracking-[-0.03em] text-white/92 outline-none placeholder:text-white/28"
+              className="h-10 w-full border-none bg-transparent text-[clamp(1.05rem,1.35vw,1.85rem)] font-semibold tracking-[-0.02em] text-white/92 outline-none placeholder:text-[0.82em] placeholder:font-medium placeholder:tracking-[-0.01em] placeholder:text-white/28"
               autoComplete="off"
               spellCheck={false}
               aria-label="Search tabs"
@@ -278,7 +344,7 @@ export function TabNavigatorView({
             )}
           </div>
 
-          <div className="max-h-[420px] space-y-1 overflow-auto p-2">
+          <div ref={listRef} className="max-h-[420px] space-y-1 overflow-auto px-2 pb-6 pt-2">
             {loading && <div className="px-3 py-2 text-xs text-white/65">Loading tabs...</div>}
 
             {!loading && error && (
@@ -311,7 +377,7 @@ export function TabNavigatorView({
                       onClick={() => {
                         void executeItem(item);
                       }}
-                      className={`grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${itemClass}`}
+                      className={`grid w-full scroll-mt-2 scroll-mb-4 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${itemClass}`}
                     >
                       <div className="min-w-0">
                         <div className="truncate text-sm font-semibold text-white/94">{item.title}</div>
@@ -338,7 +404,7 @@ export function TabNavigatorView({
                     onClick={() => {
                       void executeItem(item);
                     }}
-                    className={`grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${itemClass}`}
+                    className={`grid w-full scroll-mt-2 scroll-mb-4 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${itemClass}`}
                   >
                     <div className="flex min-w-0 items-center gap-2">
                       <span className="grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-md bg-white/8 text-white/80">

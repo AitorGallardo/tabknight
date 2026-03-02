@@ -34,6 +34,49 @@ let currentWindowId: number | null = null;
 let query = "";
 let activeIndex = 0;
 
+function focusNavigatorInput(): void {
+  const input = shadow?.querySelector<HTMLInputElement>(".tk-input");
+  if (!input) return;
+
+  input.focus();
+  input.setSelectionRange(query.length, query.length);
+}
+
+function moveSelection(delta: number): void {
+  const maxIndex = Math.max(0, buildItems().length - 1);
+  activeIndex = Math.max(0, Math.min(activeIndex + delta, maxIndex));
+  render();
+}
+
+function ensureActiveItemVisible(): void {
+  const list = shadow?.querySelector<HTMLElement>(".tk-list");
+  const activeItem = shadow?.querySelector<HTMLElement>(".tk-item.active");
+  if (!list || !activeItem) return;
+
+  const topInset = 10;
+  const bottomInset = 26;
+  const itemTop = activeItem.offsetTop;
+  const itemBottom = itemTop + activeItem.offsetHeight;
+  const viewportTop = list.scrollTop;
+  const viewportBottom = viewportTop + list.clientHeight;
+
+  if (itemTop < viewportTop + topInset) {
+    list.scrollTop = Math.max(0, itemTop - topInset);
+    return;
+  }
+
+  if (itemBottom > viewportBottom - bottomInset) {
+    list.scrollTop = Math.min(
+      list.scrollHeight - list.clientHeight,
+      itemBottom - list.clientHeight + bottomInset
+    );
+  }
+}
+
+async function selectActiveItem(): Promise<void> {
+  await executeItem(buildItems()[activeIndex]);
+}
+
 function scoreTab(tab: NavigatorTab, search: string): number {
   const q = search.toLowerCase();
   if (!q) {
@@ -189,41 +232,31 @@ function styleText(): string {
       outline: none;
       background: transparent;
       color: rgba(245, 245, 248, 0.94);
-      font-size: 28px;
-      line-height: 1.14;
-      letter-spacing: -0.02em;
-      font-weight: 560;
+      font-size: 24px;
+      line-height: 1.16;
+      letter-spacing: -0.018em;
+      font-weight: 540;
       caret-color: #43a7ff;
       font-family: "Inter", "SF Pro Display", "Segoe UI", sans-serif;
     }
 
     .tk-input::placeholder {
       color: rgba(198, 199, 206, 0.32);
-    }
-
-    .tk-info {
-      width: 26px;
-      height: 26px;
-      border-radius: 999px;
-      border: 1px solid rgba(255, 255, 255, 0.16);
-      background: rgba(7, 8, 12, 0.7);
-      color: rgba(232, 233, 238, 0.88);
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 13px;
-      font-weight: 700;
-      flex: 0 0 auto;
+      font-size: 0.84em;
+      letter-spacing: -0.01em;
+      font-weight: 520;
     }
 
     .tk-list {
-      padding: 8px;
+      padding: 8px 8px 24px;
       max-height: min(310px, calc(100vh - 190px));
       overflow-y: auto;
       overflow-x: hidden;
       display: flex;
       flex-direction: column;
       gap: 4px;
+      scroll-padding-top: 8px;
+      scroll-padding-bottom: 26px;
       scrollbar-width: thin;
       scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
     }
@@ -260,6 +293,8 @@ function styleText(): string {
       cursor: pointer;
       transition: background-color .12s ease, border-color .12s ease;
       font-family: "Inter", "SF Pro Text", "Segoe UI", sans-serif;
+      scroll-margin-top: 10px;
+      scroll-margin-bottom: 26px;
     }
 
     .tk-item:hover {
@@ -367,18 +402,12 @@ function styleText(): string {
       }
 
       .tk-input {
-        font-size: 20px;
+        font-size: 18px;
       }
 
       .tk-list {
         max-height: calc(100vh - 132px);
-        padding: 6px;
-      }
-
-      .tk-info {
-        width: 22px;
-        height: 22px;
-        font-size: 11px;
+        padding: 6px 6px 18px;
       }
 
       .tk-item {
@@ -470,7 +499,6 @@ function render(): void {
             </svg>
           </span>
           <input class="tk-input" type="text" placeholder="Search or Enter URL..." value="${escapeHtml(query)}" autofocus />
-          <span class="tk-info" aria-hidden="true">i</span>
         </div>
         <div class="tk-list">
           ${items.length > 0 ? listMarkup : '<div class="tk-empty">No matching tabs</div>'}
@@ -480,13 +508,8 @@ function render(): void {
   `;
 
   const input = shadow.querySelector<HTMLInputElement>(".tk-input");
-  const activeItem = shadow.querySelector<HTMLElement>(".tk-item.active");
-  input?.focus();
-  input?.setSelectionRange(query.length, query.length);
-  activeItem?.scrollIntoView({
-    block: "nearest",
-    inline: "nearest",
-  });
+  focusNavigatorInput();
+  ensureActiveItemVisible();
 
   input?.addEventListener("input", (event) => {
     query = (event.currentTarget as HTMLInputElement).value;
@@ -494,37 +517,19 @@ function render(): void {
     render();
   });
 
-  input?.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      activeIndex = Math.min(activeIndex + 1, Math.max(0, buildItems().length - 1));
-      render();
-      return;
-    }
-
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      activeIndex = Math.max(0, activeIndex - 1);
-      render();
-      return;
-    }
-
-    if (event.key === "Enter") {
-      event.preventDefault();
-      void executeItem(buildItems()[activeIndex]);
-      return;
-    }
-
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeNavigator();
-    }
-  });
-
   shadow.querySelector<HTMLElement>("[data-role='backdrop']")?.addEventListener("click", (event) => {
     if (event.target === event.currentTarget) {
       closeNavigator();
     }
+  });
+
+  shadow.querySelector<HTMLElement>("[data-role='panel']")?.addEventListener("mousedown", (event) => {
+    const target = event.target as HTMLElement | null;
+    if (!target || target.closest(".tk-item") || target.closest(".tk-input")) return;
+
+    queueMicrotask(() => {
+      focusNavigatorInput();
+    });
   });
 
   for (const button of shadow.querySelectorAll<HTMLButtonElement>(".tk-item")) {
@@ -565,6 +570,66 @@ async function openNavigator(): Promise<void> {
 document.addEventListener(
   "keydown",
   (event) => {
+    if (host && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      const target = event.target as HTMLElement | null;
+      const targetIsInput =
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.isContentEditable;
+
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        event.stopPropagation();
+        moveSelection(1);
+        focusNavigatorInput();
+        return;
+      }
+
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopPropagation();
+        moveSelection(-1);
+        focusNavigatorInput();
+        return;
+      }
+
+      if (event.key === "Enter") {
+        event.preventDefault();
+        event.stopPropagation();
+        void selectActiveItem();
+        return;
+      }
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        closeNavigator();
+        return;
+      }
+
+      if (!targetIsInput && event.key === "Backspace") {
+        event.preventDefault();
+        event.stopPropagation();
+        query = query.slice(0, -1);
+        activeIndex = 0;
+        render();
+        return;
+      }
+
+      if (
+        !targetIsInput &&
+        event.key.length === 1 &&
+        !event.repeat
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        query += event.key;
+        activeIndex = 0;
+        render();
+        return;
+      }
+    }
+
     const key = event.key.toLowerCase();
     const isCmdCtrlT =
       event.metaKey &&
