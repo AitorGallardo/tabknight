@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TabKnight",
-  "version": "0.15.4",
+  "version": "0.16.0",
   "description": "Keyboard-first Chrome extension for tab management",
   "permissions": [
     "tabs",
@@ -9,7 +9,8 @@
     "activeTab",
     "windows",
     "scripting",
-    "storage"
+    "storage",
+    "unlimitedStorage"
   ],
   "host_permissions": ["<all_urls>"],
   "content_scripts": [
@@ -19,13 +20,19 @@
       "run_at": "document_idle"
     }
   ],
+  "web_accessible_resources": [
+    {
+      "resources": ["popup/index.html", "popup/index.js", "popup/styles.css"],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "commands": {
     "open_tab_navigator": {
       "suggested_key": {
         "default": "Ctrl+Shift+K",
         "mac": "Command+K"
       },
-      "description": "Open TabKnight tab navigator"
+      "description": "Open TabKnight tab preview"
     }
   },
   "action": {
