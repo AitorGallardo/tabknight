@@ -110,17 +110,9 @@ async function maybeCapture(tab: chrome.tabs.Tab | undefined): Promise<void> {
   }
 }
 
-chrome.tabs.onActivated.addListener(({ tabId }) => {
-  // Give the tab a moment to paint after the switch before capturing.
-  setTimeout(() => {
-    chrome.tabs.get(tabId).then(maybeCapture).catch(() => {});
-  }, 600);
-});
-
-chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
-  if (changeInfo.status === "complete" && tab.active) void maybeCapture(tab);
-});
-
+// Captures are driven by the content script (PREVIEW_REQUEST_CAPTURE), which
+// only asks when the page is scrolled to the top — so stored thumbnails always
+// show the top of the page, never a mid-scroll position.
 chrome.tabs.onRemoved.addListener((tabId) => {
   lastCaptureAt.delete(tabId);
 });

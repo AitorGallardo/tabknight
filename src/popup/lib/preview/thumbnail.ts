@@ -11,8 +11,8 @@
 import { hashUrl } from "./hash";
 import { putThumbnail, pruneThumbnails } from "./db";
 
-const THUMB_MAX_WIDTH = 1280;
-const THUMB_QUALITY = 0.85;
+const THUMB_MAX_WIDTH = 1920;
+const THUMB_QUALITY = 0.92;
 
 /** Only http(s) pages can be captured; chrome://, the Web Store, etc. cannot. */
 export function isCapturableUrl(url: string | undefined): url is string {

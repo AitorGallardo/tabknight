@@ -25,17 +25,29 @@ function scheduleHarvest(delay = 800): void {
   harvestTimer = window.setTimeout(harvestCard, delay);
 }
 
-// Capture once the page has settled, and again whenever the user leaves the
-// tab — that frame is the freshest "where I left off" snapshot.
+// Ask the background to screenshot this tab — but only when the page is at the
+// top, so the stored thumbnail always shows the top of the page. The background
+// captures the visible tab and throttles, so this is safe to call freely.
+function requestTopCapture(): void {
+  if (window.scrollY > 1) return;
+  void chrome.runtime.sendMessage({ type: "PREVIEW_REQUEST_CAPTURE" }).catch(() => {});
+}
+
+// Initial: harvest the text card, then snapshot once the page has painted.
 scheduleHarvest(1200);
+window.setTimeout(requestTopCapture, 1500);
 
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") harvestCard();
+  if (document.visibilityState === "hidden") {
+    harvestCard();
+  } else {
+    // Returned to this tab — refresh the top-of-page snapshot.
+    window.setTimeout(requestTopCapture, 400);
+  }
 });
 
-// When the user settles after scrolling, refresh the text card (scroll position)
-// and ask the background to re-snapshot the now-current view. The background
-// throttles captures, so frequent scrolls won't spam it.
+// When the user settles after scrolling, refresh the text card; only re-snapshot
+// if they've returned to the top.
 let scrollTimer: number | undefined;
 window.addEventListener(
   "scroll",
@@ -43,8 +55,8 @@ window.addEventListener(
     window.clearTimeout(scrollTimer);
     scrollTimer = window.setTimeout(() => {
       harvestCard();
-      void chrome.runtime.sendMessage({ type: "PREVIEW_REQUEST_CAPTURE" }).catch(() => {});
-    }, 1500);
+      requestTopCapture();
+    }, 1200);
   },
   { passive: true }
 );
