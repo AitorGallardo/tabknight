@@ -105,9 +105,10 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
       setCurrentWindowId(currentWindow.id ?? null);
       setCards(new Map(allCards.map((card) => [card.urlHash, card])));
 
-      // Hide TabKnight's own preview page (standalone fallback tab), but keep the
-      // active browsing tab so the most-recently-visited tab ranks first.
+      // Hide TabKnight's own preview page and the tab the user is currently on,
+      // so the previously-visited tab (sorted by lastAccessed) ranks first.
       const selfUrl = chrome.runtime.getURL("popup/index.html");
+      const currentWindowId = currentWindow.id;
 
       const normalized = allTabs
         .filter(
@@ -115,7 +116,8 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
             tab.id !== undefined &&
             tab.windowId !== undefined &&
             !!tab.url &&
-            !tab.url.startsWith(selfUrl)
+            !tab.url.startsWith(selfUrl) &&
+            !(tab.active && tab.windowId === currentWindowId)
         )
         .map((tab) => ({
           id: tab.id,
@@ -374,15 +376,6 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                       )}
                     </span>
                     <span className="min-w-0 flex-1 truncate text-[13px] font-medium tracking-[-0.01em]">{tab.title}</span>
-                    {tab.active && tab.windowId === currentWindowId && (
-                      <span
-                        className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
-                          active ? "bg-white/25 text-white" : "bg-white/10 text-white/65"
-                        }`}
-                      >
-                        Current
-                      </span>
-                    )}
                   </button>
                 </div>
               );
