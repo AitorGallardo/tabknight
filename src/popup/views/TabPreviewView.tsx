@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Globe, Search, X } from "lucide-react";
 import { activateTab, getAllTabs } from "../lib/chrome-api";
-import { getAllCards } from "../lib/preview/db";
+import { getAllCards, getThumbnail } from "../lib/preview/db";
 import { hashUrl } from "../lib/preview/hash";
 import type { ContentCard } from "../lib/preview/types";
 
@@ -170,6 +170,30 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
 
   const activeTabItem = orderedTabs[activeIndex];
   const activeCard = activeTabItem ? cards.get(hashUrl(activeTabItem.url)) : undefined;
+
+  // Lazily load the pixel thumbnail for the focused tab (Tier 2). We fetch one
+  // blob at a time and revoke its object URL when the selection changes.
+  const [thumb, setThumb] = useState<{ url: string; capturedAt: number } | null>(null);
+  const activeUrl = activeTabItem?.url;
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    setThumb(null);
+    if (!activeUrl) return;
+
+    getThumbnail(hashUrl(activeUrl))
+      .then((record) => {
+        if (cancelled || !record) return;
+        objectUrl = URL.createObjectURL(record.blob);
+        setThumb({ url: objectUrl, capturedAt: record.capturedAt });
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [activeUrl]);
 
   const focusInputAtEnd = useCallback(() => {
     const input = inputRef.current;
@@ -374,7 +398,9 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
               className="relative h-40 shrink-0 overflow-hidden border-b border-white/[0.07]"
               style={{ background: activeCard?.themeColor ? `${activeCard.themeColor}22` : "rgba(255,255,255,0.03)" }}
             >
-              {activeCard?.ogImage ? (
+              {thumb ? (
+                <img src={thumb.url} alt="" className="h-full w-full object-cover object-top" />
+              ) : activeCard?.ogImage ? (
                 <img src={activeCard.ogImage} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
               ) : (
                 <div className="grid h-full place-items-center">
@@ -392,10 +418,12 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
             <div className="min-h-0 flex-1 overflow-auto px-6 py-5">
               <div className="mb-1 flex items-center gap-2 text-[11px] text-white/45">
                 <span className="truncate">{activeCard?.siteName || domainOf(activeTabItem.url)}</span>
-                {activeCard && (
+                {(thumb?.capturedAt ?? activeCard?.capturedAt) && (
                   <>
                     <span className="text-white/25">·</span>
-                    <span className="shrink-0">captured {relativeTime(activeCard.capturedAt, now)}</span>
+                    <span className="shrink-0">
+                      captured {relativeTime(thumb?.capturedAt ?? activeCard!.capturedAt, now)}
+                    </span>
                   </>
                 )}
               </div>
@@ -415,7 +443,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                 </p>
               )}
 
-              {!activeCard && (
+              {!activeCard && !thumb && (
                 <p className="mt-6 text-xs text-white/40">
                   No snapshot yet — visit this tab once and TabKnight will capture a preview.
                 </p>

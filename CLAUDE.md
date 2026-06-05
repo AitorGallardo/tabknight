@@ -51,7 +51,10 @@ for all new surfaces. Match it rather than reviving older patterns.
   the search input stays focused.
 - **Tiered, never-blank previews:** always render the best tier available now
   and upgrade in place — favicon+title (Tier 0) → rich card / og:image (Tier 1)
-  → pixel thumbnail (Tier 2, planned). Never show a spinner or an empty pane.
+  → real pixel thumbnail (Tier 2). Never show a spinner or an empty pane.
+  Tier 2 = the active tab screenshotted via `captureVisibleTab` on
+  arrival/load/scroll-settle, downscaled to WebP, stored in the IndexedDB
+  `thumbnails` store (throttled; background-only — see `preview/thumbnail.ts`).
 - **Snapshot architecture:** the content script *harvests* lightweight content
   cards from the live DOM and messages them to the background, which persists to
   **IndexedDB** (`src/popup/lib/preview/db.ts`). Content scripts can't reach the

@@ -33,6 +33,22 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") harvestCard();
 });
 
+// When the user settles after scrolling, refresh the text card (scroll position)
+// and ask the background to re-snapshot the now-current view. The background
+// throttles captures, so frequent scrolls won't spam it.
+let scrollTimer: number | undefined;
+window.addEventListener(
+  "scroll",
+  () => {
+    window.clearTimeout(scrollTimer);
+    scrollTimer = window.setTimeout(() => {
+      harvestCard();
+      void chrome.runtime.sendMessage({ type: "PREVIEW_REQUEST_CAPTURE" }).catch(() => {});
+    }, 1500);
+  },
+  { passive: true }
+);
+
 /* ------------------------- preview overlay (Cmd+K) ------------------------ */
 // A blended, in-page dialog: the page supplies the blurred backdrop, and a
 // floating panel hosts the extension's React preview view inside an <iframe>.

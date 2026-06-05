@@ -6,6 +6,7 @@
 
 import { updateBadgeCount } from "../popup/lib/chrome-api";
 import { putCard, pruneCards } from "../popup/lib/preview/db";
+import { captureActiveTabThumbnail } from "../popup/lib/preview/thumbnail";
 import type { ContentCard } from "../popup/lib/preview/types";
 
 async function injectContentScriptIntoOpenTabs(): Promise<void> {
@@ -83,6 +84,47 @@ async function openStandalonePreview(sourceTab?: chrome.tabs.Tab): Promise<void>
   });
 }
 
+/* ----------------------- pixel-thumbnail capture ------------------------- */
+// Snapshot the active tab when the user arrives on it, when it finishes
+// loading, and when they settle after scrolling — so the stored image reflects
+// the page roughly as last seen. Throttled per tab and serialized globally to
+// respect Chrome's captureVisibleTab rate limit.
+
+const MIN_CAPTURE_INTERVAL = 3000;
+const lastCaptureAt = new Map<number, number>();
+let captureInFlight = false;
+
+async function maybeCapture(tab: chrome.tabs.Tab | undefined): Promise<void> {
+  if (!tab?.id || !tab.active) return;
+
+  const now = Date.now();
+  if (now - (lastCaptureAt.get(tab.id) ?? 0) < MIN_CAPTURE_INTERVAL) return;
+  if (captureInFlight) return;
+
+  lastCaptureAt.set(tab.id, now);
+  captureInFlight = true;
+  try {
+    await captureActiveTabThumbnail(tab);
+  } finally {
+    captureInFlight = false;
+  }
+}
+
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  // Give the tab a moment to paint after the switch before capturing.
+  setTimeout(() => {
+    chrome.tabs.get(tabId).then(maybeCapture).catch(() => {});
+  }, 600);
+});
+
+chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
+  if (changeInfo.status === "complete" && tab.active) void maybeCapture(tab);
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  lastCaptureAt.delete(tabId);
+});
+
 // Update badge on startup
 chrome.runtime.onInstalled.addListener(() => {
   updateBadgeCount();
@@ -143,6 +185,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await putCard(card);
         await pruneCards();
       }
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (message?.type === "PREVIEW_REQUEST_CAPTURE") {
+      // Sent by the content script after the user settles (e.g. stops
+      // scrolling) so the stored image matches what they last looked at.
+      await maybeCapture(sender.tab);
       sendResponse({ ok: true });
       return;
     }

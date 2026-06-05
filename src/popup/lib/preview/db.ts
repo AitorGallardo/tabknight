@@ -26,6 +26,9 @@ const THUMBS_STORE = "thumbnails";
 /** Default LRU cap on stored cards. Oldest (by capturedAt) are evicted first. */
 export const DEFAULT_MAX_CARDS = 300;
 
+/** Thumbnails are heavier (image blobs), so we keep fewer of them. */
+export const DEFAULT_MAX_THUMBS = 150;
+
 let dbPromise: Promise<IDBDatabase> | null = null;
 
 function openDb(): Promise<IDBDatabase> {
@@ -99,14 +102,14 @@ export async function deleteCard(urlHash: string): Promise<void> {
 }
 
 /**
- * Evict oldest cards beyond `maxEntries` (LRU by capturedAt). Cheap to call
- * after every write — it no-ops until the cap is exceeded.
+ * Evict oldest entries of a store beyond `maxEntries` (LRU by capturedAt).
+ * Cheap to call after every write — it no-ops until the cap is exceeded.
  */
-export async function pruneCards(maxEntries: number = DEFAULT_MAX_CARDS): Promise<void> {
+async function pruneStore(storeName: string, maxEntries: number): Promise<void> {
   const db = await openDb();
   await new Promise<void>((resolve, reject) => {
-    const transaction = db.transaction(CARDS_STORE, "readwrite");
-    const store = transaction.objectStore(CARDS_STORE);
+    const transaction = db.transaction(storeName, "readwrite");
+    const store = transaction.objectStore(storeName);
     const countRequest = store.count();
 
     countRequest.onsuccess = () => {
@@ -136,6 +139,10 @@ export async function pruneCards(maxEntries: number = DEFAULT_MAX_CARDS): Promis
   });
 }
 
+export function pruneCards(maxEntries: number = DEFAULT_MAX_CARDS): Promise<void> {
+  return pruneStore(CARDS_STORE, maxEntries);
+}
+
 export async function clearAllCards(): Promise<void> {
   await tx(CARDS_STORE, "readwrite", (store) => store.clear());
 }
@@ -148,4 +155,8 @@ export async function putThumbnail(thumb: TabThumbnail): Promise<void> {
 
 export async function getThumbnail(urlHash: string): Promise<TabThumbnail | undefined> {
   return tx<TabThumbnail | undefined>(THUMBS_STORE, "readonly", (store) => store.get(urlHash));
+}
+
+export function pruneThumbnails(maxEntries: number = DEFAULT_MAX_THUMBS): Promise<void> {
+  return pruneStore(THUMBS_STORE, maxEntries);
 }
