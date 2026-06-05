@@ -273,11 +273,17 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   let lastBucket = "";
 
   return (
-    <div className="grid h-full w-full grid-cols-[minmax(280px,380px)_1fr] overflow-hidden rounded-[18px] border border-white/15 bg-[linear-gradient(180deg,rgba(16,18,25,0.82),rgba(10,12,18,0.8))] text-[#f4f5f8] shadow-[0_32px_90px_rgba(0,0,0,0.5)] backdrop-blur-[22px]">
+    <div
+      className="grid h-full w-full grid-cols-[340px_1fr] overflow-hidden rounded-[18px] border border-white/10 bg-[linear-gradient(180deg,rgba(28,28,30,0.86),rgba(20,20,22,0.84))] text-[#f5f5f7] shadow-[0_32px_90px_rgba(0,0,0,0.55)] backdrop-blur-[30px]"
+      style={{
+        fontFamily:
+          '-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", system-ui, sans-serif',
+      }}
+    >
       {/* Left rail: search + grouped tab list */}
-      <div className="flex min-h-0 flex-col border-r border-white/10">
-        <div className="flex items-center gap-2 border-b border-white/10 px-3 py-3">
-          <Search className="h-4 w-4 shrink-0 text-white/85" />
+      <div className="flex min-h-0 flex-col border-r border-white/[0.07]">
+        <div className="flex items-center gap-2 border-b border-white/[0.07] px-3 py-3">
+          <Search className="h-4 w-4 shrink-0 text-white/55" />
           <input
             ref={inputRef}
             value={query}
@@ -291,7 +297,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           <button
             type="button"
             onClick={() => void dismiss(true)}
-            className="grid h-7 w-7 place-items-center rounded-full border border-white/14 bg-black/20 text-white/75 hover:bg-white/10"
+            className="grid h-7 w-7 place-items-center rounded-full bg-white/[0.06] text-white/55 transition-colors hover:bg-white/[0.12] hover:text-white/80"
             aria-label="Close preview"
           >
             <X className="h-3.5 w-3.5" />
@@ -314,7 +320,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
               return (
                 <div key={tab.id}>
                   {header && (
-                    <div className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-white/35">
+                    <div className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-white/30">
                       {header}
                     </div>
                   )}
@@ -325,20 +331,28 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                     type="button"
                     onMouseEnter={() => setActiveIndex(index)}
                     onClick={() => void activate(tab)}
-                    className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors ${
-                      active ? "border-white/12 bg-white/14" : "border-transparent hover:bg-white/8"
+                    className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${
+                      active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]"
                     }`}
                   >
-                    <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded bg-white/8 text-white/80">
+                    <span
+                      className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${
+                        active ? "bg-white/20" : "bg-white/[0.08] text-white/80"
+                      }`}
+                    >
                       {tab.favIconUrl ? (
                         <img src={tab.favIconUrl} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
                       ) : (
                         <Globe className="h-3.5 w-3.5" />
                       )}
                     </span>
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium text-white/90">{tab.title}</span>
+                    <span className="min-w-0 flex-1 truncate text-[13px] font-medium tracking-[-0.01em]">{tab.title}</span>
                     {tab.active && tab.windowId === currentWindowId && (
-                      <span className="shrink-0 rounded-full border border-white/20 px-1.5 py-0.5 text-[9px] font-semibold text-white/70">
+                      <span
+                        className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
+                          active ? "bg-white/25 text-white" : "bg-white/10 text-white/65"
+                        }`}
+                      >
                         Current
                       </span>
                     )}
@@ -357,7 +371,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           <div className="flex min-h-0 flex-1 flex-col">
             {/* Hero image (Tier 1) or tinted fallback (Tier 0) */}
             <div
-              className="relative h-40 shrink-0 overflow-hidden border-b border-white/10"
+              className="relative h-40 shrink-0 overflow-hidden border-b border-white/[0.07]"
               style={{ background: activeCard?.themeColor ? `${activeCard.themeColor}22` : "rgba(255,255,255,0.03)" }}
             >
               {activeCard?.ogImage ? (
@@ -386,7 +400,9 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                 )}
               </div>
 
-              <h2 className="text-lg font-semibold leading-snug text-white/95">{activeTabItem.title}</h2>
+              <h2 className="text-[19px] font-semibold leading-snug tracking-[-0.02em] text-white/95">
+                {activeTabItem.title}
+              </h2>
               <div className="mt-1 truncate text-xs text-white/45">{activeTabItem.url}</div>
 
               {activeCard?.description && (
@@ -406,12 +422,12 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
               )}
             </div>
 
-            <div className="flex items-center justify-end gap-3 border-t border-white/10 px-6 py-3 text-[11px] text-white/55">
-              <span>
-                <kbd className="rounded bg-white/10 px-1.5 py-0.5">↵</kbd> Switch to tab
+            <div className="flex items-center justify-end gap-4 border-t border-white/[0.07] px-6 py-3 text-[11px] text-white/50">
+              <span className="flex items-center gap-1.5">
+                <kbd className="rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70">↵</kbd> Switch to tab
               </span>
-              <span>
-                <kbd className="rounded bg-white/10 px-1.5 py-0.5">esc</kbd> Close
+              <span className="flex items-center gap-1.5">
+                <kbd className="rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70">esc</kbd> Close
               </span>
             </div>
           </div>
