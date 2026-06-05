@@ -96,15 +96,18 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   useEffect(() => {
     const load = async () => {
       setLoading(true);
-      const [allTabs, currentWindow, currentTab, allCards] = await Promise.all([
+      const [allTabs, currentWindow, allCards] = await Promise.all([
         getAllTabs(),
         chrome.windows.getCurrent(),
-        chrome.tabs.getCurrent().catch(() => undefined),
         getAllCards().catch(() => [] as ContentCard[]),
       ]);
 
       setCurrentWindowId(currentWindow.id ?? null);
       setCards(new Map(allCards.map((card) => [card.urlHash, card])));
+
+      // Hide TabKnight's own preview page (standalone fallback tab), but keep the
+      // active browsing tab so the most-recently-visited tab ranks first.
+      const selfUrl = chrome.runtime.getURL("popup/index.html");
 
       const normalized = allTabs
         .filter(
@@ -112,7 +115,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
             tab.id !== undefined &&
             tab.windowId !== undefined &&
             !!tab.url &&
-            tab.id !== currentTab?.id
+            !tab.url.startsWith(selfUrl)
         )
         .map((tab) => ({
           id: tab.id,
@@ -393,9 +396,10 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           <div className="grid h-full place-items-center text-sm text-white/40">Select a tab to preview</div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col">
-            {/* Hero image (Tier 1) or tinted fallback (Tier 0) */}
+            {/* Hero (Tier 2 screenshot → Tier 1 og:image → Tier 0 favicon).
+                Takes 60% of the pane height; the description below gets 40%. */}
             <div
-              className="relative h-40 shrink-0 overflow-hidden border-b border-white/[0.07]"
+              className="relative min-h-0 flex-[3] overflow-hidden border-b border-white/[0.07]"
               style={{ background: activeCard?.themeColor ? `${activeCard.themeColor}22` : "rgba(255,255,255,0.03)" }}
             >
               {thumb ? (
@@ -415,7 +419,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
               )}
             </div>
 
-            <div className="min-h-0 flex-1 overflow-auto px-6 py-5">
+            <div className="min-h-0 flex-[2] overflow-auto px-6 py-5">
               <div className="mb-1 flex items-center gap-2 text-[11px] text-white/45">
                 <span className="truncate">{activeCard?.siteName || domainOf(activeTabItem.url)}</span>
                 {(thumb?.capturedAt ?? activeCard?.capturedAt) && (

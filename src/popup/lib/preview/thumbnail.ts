@@ -11,8 +11,8 @@
 import { hashUrl } from "./hash";
 import { putThumbnail, pruneThumbnails } from "./db";
 
-const THUMB_MAX_WIDTH = 600;
-const THUMB_QUALITY = 0.6;
+const THUMB_MAX_WIDTH = 1280;
+const THUMB_QUALITY = 0.85;
 
 /** Only http(s) pages can be captured; chrome://, the Web Store, etc. cannot. */
 export function isCapturableUrl(url: string | undefined): url is string {
@@ -37,7 +37,9 @@ export async function captureActiveTabThumbnail(tab: chrome.tabs.Tab): Promise<v
 
   let dataUrl: string;
   try {
-    dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 80 });
+    // Capture losslessly (PNG) so the only quality loss is the single WebP
+    // re-encode below, not a JPEG-then-WebP double compression.
+    dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
   } catch {
     // Tab not in foreground, restricted, or rate-limited.
     return;
@@ -56,6 +58,8 @@ export async function captureActiveTabThumbnail(tab: chrome.tabs.Tab): Promise<v
       bitmap.close();
       return;
     }
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
     ctx.drawImage(bitmap, 0, 0, width, height);
     bitmap.close();
 
