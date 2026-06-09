@@ -1,655 +1,162 @@
-interface NavigatorTab {
-  id: number;
-  windowId: number;
-  title: string;
-  url: string;
-  favIconUrl?: string;
-  pinned: boolean;
-  active: boolean;
-  index: number;
-  lastAccessed: number;
-}
+import { extractContentCard } from "../popup/lib/preview/harvester";
+import type { PreviewCardCaptureMessage } from "../popup/lib/preview/types";
 
-type NavigatorItem =
-  | { type: "open"; id: "open"; title: string; subtitle: string }
-  | { type: "tab"; id: string; tab: NavigatorTab; score: number };
+/* -------------------------- content-card harvester ------------------------ */
+// Build a lightweight preview snapshot of this page and hand it to the
+// background, which persists it to IndexedDB. Best-effort and silent on error.
 
-interface QueryResponse {
-  ok: boolean;
-  tabs?: NavigatorTab[];
-  currentWindowId?: number | null;
-  error?: string;
-}
+let harvestTimer: number | undefined;
 
-interface RuntimeResult {
-  ok: boolean;
-  error?: string;
-}
-
-const HOST_ID = "tabknight-arc-navigator-host";
-let host: HTMLDivElement | null = null;
-let shadow: ShadowRoot | null = null;
-let tabs: NavigatorTab[] = [];
-let currentWindowId: number | null = null;
-let query = "";
-let activeIndex = 0;
-
-function focusNavigatorInput(): void {
-  const input = shadow?.querySelector<HTMLInputElement>(".tk-input");
-  if (!input) return;
-
-  input.focus();
-  input.setSelectionRange(query.length, query.length);
-}
-
-function moveSelection(delta: number): void {
-  const maxIndex = Math.max(0, buildItems().length - 1);
-  activeIndex = Math.max(0, Math.min(activeIndex + delta, maxIndex));
-  render();
-}
-
-function ensureActiveItemVisible(): void {
-  const list = shadow?.querySelector<HTMLElement>(".tk-list");
-  const activeItem = shadow?.querySelector<HTMLElement>(".tk-item.active");
-  if (!list || !activeItem) return;
-
-  const topInset = 10;
-  const bottomInset = 26;
-  const itemTop = activeItem.offsetTop;
-  const itemBottom = itemTop + activeItem.offsetHeight;
-  const viewportTop = list.scrollTop;
-  const viewportBottom = viewportTop + list.clientHeight;
-
-  if (itemTop < viewportTop + topInset) {
-    list.scrollTop = Math.max(0, itemTop - topInset);
-    return;
-  }
-
-  if (itemBottom > viewportBottom - bottomInset) {
-    list.scrollTop = Math.min(
-      list.scrollHeight - list.clientHeight,
-      itemBottom - list.clientHeight + bottomInset
-    );
-  }
-}
-
-async function selectActiveItem(): Promise<void> {
-  await executeItem(buildItems()[activeIndex]);
-}
-
-function scoreTab(tab: NavigatorTab, search: string): number {
-  const q = search.toLowerCase();
-  if (!q) {
-    return (tab.active ? 300 : 0) + (tab.pinned ? 25 : 0) + tab.lastAccessed / 1_000_000;
-  }
-
-  const title = tab.title.toLowerCase();
-  const url = tab.url.toLowerCase();
-
-  let score = 0;
-  if (title === q) score += 600;
-  if (title.startsWith(q)) score += 320;
-  if (title.includes(q)) score += 220;
-  if (url.includes(q)) score += 160;
-  if (tab.active) score += 20;
-  if (tab.pinned) score += 12;
-
-  return score;
-}
-
-function buildItems(): NavigatorItem[] {
-  const q = query.trim();
-
-  const rankedTabs: NavigatorItem[] = tabs
-    .map((tab) => ({ tab, score: scoreTab(tab, q) }))
-    .filter(({ score }) => !q || score > 0)
-    .sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      if (a.tab.windowId === currentWindowId && b.tab.windowId !== currentWindowId) return -1;
-      if (b.tab.windowId === currentWindowId && a.tab.windowId !== currentWindowId) return 1;
-      if (a.tab.windowId !== b.tab.windowId) return a.tab.windowId - b.tab.windowId;
-      return a.tab.index - b.tab.index;
-    })
-    .map(({ tab, score }) => ({
-      type: "tab" as const,
-      id: `tab-${tab.id}`,
-      tab,
-      score,
-    }));
-
-  if (!q) return rankedTabs;
-
-  return [
-    {
-      type: "open" as const,
-      id: "open",
-      title: `Open \"${q}\"`,
-      subtitle: "Search or open URL in new tab",
-    },
-    ...rankedTabs,
-  ];
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function closeNavigator(): void {
-  host?.remove();
-  host = null;
-  shadow = null;
-  query = "";
-  activeIndex = 0;
-}
-
-async function runtimeMessage<T>(message: unknown): Promise<T> {
-  return chrome.runtime.sendMessage(message) as Promise<T>;
-}
-
-async function executeItem(item: NavigatorItem | undefined): Promise<void> {
-  if (!item) return;
-
-  if (item.type === "open") {
-    const response = await runtimeMessage<RuntimeResult>({
-      type: "TAB_NAVIGATOR_OPEN_QUERY",
-      query,
+function harvestCard(): void {
+  try {
+    const card = extractContentCard();
+    if (!card.url || card.url.startsWith("about:")) return;
+    const message: PreviewCardCaptureMessage = { type: "PREVIEW_CARD_CAPTURE", card };
+    void chrome.runtime.sendMessage(message).catch(() => {
+      // Background may be asleep or the context invalidated; ignore.
     });
-    if (!response.ok) return;
-    closeNavigator();
+  } catch {
+    // Never let harvesting interfere with the page.
+  }
+}
+
+function scheduleHarvest(delay = 800): void {
+  window.clearTimeout(harvestTimer);
+  harvestTimer = window.setTimeout(harvestCard, delay);
+}
+
+// Ask the background to screenshot this tab — but only when the page is at the
+// top, so the stored thumbnail always shows the top of the page. The background
+// captures the visible tab and throttles, so this is safe to call freely.
+function requestTopCapture(): void {
+  if (window.scrollY > 1) return;
+  void chrome.runtime.sendMessage({ type: "PREVIEW_REQUEST_CAPTURE" }).catch(() => {});
+}
+
+// Initial: harvest the text card, then snapshot once the page has painted.
+scheduleHarvest(1200);
+window.setTimeout(requestTopCapture, 1500);
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    harvestCard();
+  } else {
+    // Returned to this tab — refresh the top-of-page snapshot.
+    window.setTimeout(requestTopCapture, 400);
+  }
+});
+
+// When the user settles after scrolling, refresh the text card; only re-snapshot
+// if they've returned to the top.
+let scrollTimer: number | undefined;
+window.addEventListener(
+  "scroll",
+  () => {
+    window.clearTimeout(scrollTimer);
+    scrollTimer = window.setTimeout(() => {
+      harvestCard();
+      requestTopCapture();
+    }, 1200);
+  },
+  { passive: true }
+);
+
+/* ------------------------- preview overlay (Cmd+K) ------------------------ */
+// A blended, in-page dialog: the page supplies the blurred backdrop, and a
+// floating panel hosts the extension's React preview view inside an <iframe>.
+// The iframe runs in the extension origin, so it can read the snapshot DB and
+// activate tabs directly. If a strict-CSP page blocks the frame, we time out
+// and ask the background to fall back to the standalone tab.
+
+const PREVIEW_HOST_ID = "tabknight-preview-host";
+let previewHost: HTMLDivElement | null = null;
+let previewFallbackTimer: number | undefined;
+
+function closePreviewOverlay(): void {
+  window.clearTimeout(previewFallbackTimer);
+  previewHost?.remove();
+  previewHost = null;
+}
+
+function openPreviewOverlay(): void {
+  if (previewHost) {
+    closePreviewOverlay();
     return;
   }
 
-  const response = await runtimeMessage<RuntimeResult>({
-    type: "TAB_NAVIGATOR_ACTIVATE",
-    tabId: item.tab.id,
-    windowId: item.tab.windowId,
-  });
-  if (!response.ok) return;
-  closeNavigator();
-}
+  const host = document.createElement("div");
+  host.id = PREVIEW_HOST_ID;
+  const shadow = host.attachShadow({ mode: "open" });
+  document.documentElement.appendChild(host);
+  previewHost = host;
 
-function styleText(): string {
-  return `
-    :host {
-      all: initial;
-    }
-
-    .tk-backdrop {
-      position: fixed;
-      inset: 0;
-      z-index: 2147483647;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: rgba(6, 7, 10, 0.34);
-      backdrop-filter: blur(7px) saturate(105%);
-      -webkit-backdrop-filter: blur(7px) saturate(105%);
-      font-family: "Inter", "SF Pro Text", "Segoe UI", sans-serif;
-      color: rgba(245, 245, 248, 0.95);
-    }
-
-    .tk-panel {
-      width: min(760px, calc(100vw - 44px));
-      max-height: min(430px, calc(100vh - 84px));
-      border-radius: 16px;
-      border: 1px solid rgba(255, 255, 255, 0.19);
-      background:
-        radial-gradient(70% 110% at 68% 90%, rgba(95, 41, 14, 0.19), transparent 68%),
-        radial-gradient(62% 95% at 26% 95%, rgba(24, 39, 95, 0.18), transparent 70%),
-        linear-gradient(180deg, rgba(21, 23, 30, 0.82), rgba(14, 16, 23, 0.78));
-      backdrop-filter: blur(22px) saturate(145%);
-      -webkit-backdrop-filter: blur(22px) saturate(145%);
-      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
-      overflow: hidden;
-    }
-
-    .tk-head {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 16px 18px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-    }
-
-    .tk-search-icon {
-      width: 20px;
-      height: 20px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      color: rgba(232, 232, 236, 0.88);
-      flex: 0 0 auto;
-    }
-
-    .tk-input {
-      width: 100%;
-      border: 0;
-      outline: none;
-      background: transparent;
-      color: rgba(245, 245, 248, 0.94);
-      font-size: 24px;
-      line-height: 1.16;
-      letter-spacing: -0.018em;
-      font-weight: 540;
-      caret-color: #43a7ff;
-      font-family: "Inter", "SF Pro Display", "Segoe UI", sans-serif;
-    }
-
-    .tk-input::placeholder {
-      color: rgba(198, 199, 206, 0.32);
-      font-size: 0.84em;
-      letter-spacing: -0.01em;
-      font-weight: 520;
-    }
-
-    .tk-list {
-      padding: 8px 8px 24px;
-      max-height: min(310px, calc(100vh - 190px));
-      overflow-y: auto;
-      overflow-x: hidden;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      scroll-padding-top: 8px;
-      scroll-padding-bottom: 26px;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
-    }
-
-    .tk-list::-webkit-scrollbar {
-      width: 8px;
-    }
-
-    .tk-list::-webkit-scrollbar-track {
-      background: transparent;
-    }
-
-    .tk-list::-webkit-scrollbar-thumb {
-      background: rgba(255, 255, 255, 0.18);
-      border-radius: 999px;
-    }
-
-    .tk-list::-webkit-scrollbar-thumb:hover {
-      background: rgba(255, 255, 255, 0.26);
-    }
-
-    .tk-item {
-      border: 1px solid transparent;
-      border-radius: 10px;
-      background: transparent;
-      color: rgba(241, 241, 244, 0.94);
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      align-items: center;
-      gap: 16px;
-      width: 100%;
-      padding: 9px 12px;
-      text-align: left;
-      cursor: pointer;
-      transition: background-color .12s ease, border-color .12s ease;
-      font-family: "Inter", "SF Pro Text", "Segoe UI", sans-serif;
-      scroll-margin-top: 10px;
-      scroll-margin-bottom: 26px;
-    }
-
-    .tk-item:hover {
-      background: rgba(255, 255, 255, 0.07);
-    }
-
-    .tk-item.active {
-      background: rgba(255, 255, 255, 0.16);
-      border-color: rgba(255, 255, 255, 0.12);
-    }
-
-    .tk-left {
-      display: flex;
-      align-items: center;
-      min-width: 0;
-      gap: 10px;
-    }
-
-    .tk-icon {
-      width: 26px;
-      height: 26px;
-      border-radius: 7px;
-      background: rgba(255, 255, 255, 0.09);
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      flex: 0 0 auto;
-      font-size: 14px;
-      overflow: hidden;
-    }
-
-    .tk-favicon {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-    }
-
-    .tk-text {
-      min-width: 0;
-      display: grid;
-      gap: 2px;
-    }
-
-    .tk-title {
-      font-size: 17px;
-      line-height: 1.22;
-      letter-spacing: -0.01em;
-      font-weight: 580;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .tk-subtitle {
-      font-size: 11px;
-      color: rgba(214, 214, 219, 0.5);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .tk-right {
-      display: flex;
-      align-items: center;
-      gap: 9px;
-      color: rgba(232, 232, 237, 0.74);
-      font-size: 12px;
-      font-weight: 600;
-      letter-spacing: 0;
-    }
-
-    .tk-action {
-      color: rgba(233, 233, 237, 0.68);
-      white-space: nowrap;
-    }
-
-    .tk-arrow {
-      width: 32px;
-      height: 32px;
-      border-radius: 8px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 22px;
-      line-height: 1;
-      background: rgba(255, 255, 255, 0.12);
-      color: rgba(232, 232, 237, 0.92);
-    }
-
-    .tk-empty {
-      color: rgba(218, 218, 225, 0.7);
-      padding: 14px 10px 16px;
-      font-size: 12px;
-    }
-
-    @media (max-width: 900px) {
-      .tk-panel {
-        width: calc(100vw - 16px);
-        max-height: calc(100vh - 24px);
-        border-radius: 12px;
-      }
-
-      .tk-head {
-        padding: 10px;
-      }
-
-      .tk-input {
-        font-size: 18px;
-      }
-
-      .tk-list {
-        max-height: calc(100vh - 132px);
-        padding: 6px 6px 18px;
-      }
-
-      .tk-item {
-        padding: 8px;
-      }
-
-      .tk-title {
-        font-size: 14px;
-      }
-
-      .tk-right {
-        font-size: 11px;
-        gap: 7px;
-      }
-
-      .tk-arrow {
-        width: 28px;
-        height: 28px;
-        font-size: 20px;
-      }
-
-      .tk-action {
-        display: none;
-      }
-    }
-  `;
-}
-
-function render(): void {
-  if (!shadow) return;
-
-  const items = buildItems();
-  activeIndex = Math.max(0, Math.min(activeIndex, Math.max(0, items.length - 1)));
-
-  const listMarkup = items
-    .map((item, index) => {
-      const isActive = index === activeIndex;
-      const activeClass = isActive ? " active" : "";
-
-      if (item.type === "open") {
-        return `
-          <button class="tk-item${activeClass}" data-index="${index}" type="button">
-            <div class="tk-left">
-              <div class="tk-icon">+</div>
-              <div class="tk-text">
-                <div class="tk-title">${escapeHtml(item.title)}</div>
-                <div class="tk-subtitle">${escapeHtml(item.subtitle)}</div>
-              </div>
-            </div>
-            <div class="tk-right">
-              <span class="tk-action">Open in New Tab</span>
-              <span class="tk-arrow">→</span>
-            </div>
-          </button>
-        `;
-      }
-
-      const icon = item.tab.favIconUrl
-        ? `<img class="tk-favicon" src="${escapeHtml(item.tab.favIconUrl)}" alt="" />`
-        : "•";
-
-      return `
-        <button class="tk-item${activeClass}" data-index="${index}" type="button">
-          <div class="tk-left">
-            <div class="tk-icon">${icon}</div>
-            <div class="tk-text">
-              <div class="tk-title">${escapeHtml(item.tab.title)}</div>
-              <div class="tk-subtitle">${escapeHtml(item.tab.url)}</div>
-            </div>
-          </div>
-          <div class="tk-right">
-            <span class="tk-action">Switch to Tab</span>
-            <span class="tk-arrow">→</span>
-          </div>
-        </button>
-      `;
-    })
-    .join("");
+  const src = chrome.runtime.getURL("popup/index.html?view=preview&overlay=1");
 
   shadow.innerHTML = `
-    <style>${styleText()}</style>
-    <div class="tk-backdrop" data-role="backdrop">
-      <div class="tk-panel" data-role="panel">
-        <div class="tk-head">
-          <span class="tk-search-icon" aria-hidden="true">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"></circle>
-              <path d="M16.5 16.5L21 21" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
-            </svg>
-          </span>
-          <input class="tk-input" type="text" placeholder="Search or Enter URL..." value="${escapeHtml(query)}" autofocus />
-        </div>
-        <div class="tk-list">
-          ${items.length > 0 ? listMarkup : '<div class="tk-empty">No matching tabs</div>'}
-        </div>
+    <style>
+      :host { all: initial; }
+      .tkp-backdrop {
+        position: fixed; inset: 0; z-index: 2147483647;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(6, 7, 10, 0.34);
+        backdrop-filter: blur(7px) saturate(105%);
+        -webkit-backdrop-filter: blur(7px) saturate(105%);
+      }
+      .tkp-panel {
+        width: min(1040px, 92vw); height: min(640px, 86vh);
+        border-radius: 18px; overflow: hidden;
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
+        background: transparent;
+      }
+      .tkp-frame { width: 100%; height: 100%; border: 0; background: transparent; }
+    </style>
+    <div class="tkp-backdrop" data-role="backdrop">
+      <div class="tkp-panel">
+        <iframe class="tkp-frame" src="${src}" referrerpolicy="no-referrer"></iframe>
       </div>
     </div>
   `;
 
-  const input = shadow.querySelector<HTMLInputElement>(".tk-input");
-  focusNavigatorInput();
-  ensureActiveItemVisible();
-
-  input?.addEventListener("input", (event) => {
-    query = (event.currentTarget as HTMLInputElement).value;
-    activeIndex = 0;
-    render();
+  const backdrop = shadow.querySelector<HTMLElement>("[data-role='backdrop']");
+  backdrop?.addEventListener("mousedown", (event) => {
+    if (event.target === backdrop) closePreviewOverlay();
   });
 
-  shadow.querySelector<HTMLElement>("[data-role='backdrop']")?.addEventListener("click", (event) => {
-    if (event.target === event.currentTarget) {
-      closeNavigator();
-    }
-  });
+  const frame = shadow.querySelector<HTMLIFrameElement>(".tkp-frame");
+  frame?.addEventListener("load", () => frame.contentWindow?.focus());
 
-  shadow.querySelector<HTMLElement>("[data-role='panel']")?.addEventListener("mousedown", (event) => {
-    const target = event.target as HTMLElement | null;
-    if (!target || target.closest(".tk-item") || target.closest(".tk-input")) return;
-
-    queueMicrotask(() => {
-      focusNavigatorInput();
-    });
-  });
-
-  for (const button of shadow.querySelectorAll<HTMLButtonElement>(".tk-item")) {
-    button.addEventListener("mouseenter", () => {
-      activeIndex = Number(button.dataset.index || 0);
-      render();
-    });
-
-    button.addEventListener("click", () => {
-      const index = Number(button.dataset.index || 0);
-      void executeItem(buildItems()[index]);
-    });
-  }
+  // If the iframe never signals "ready" (e.g. CSP blocked it), degrade to a tab.
+  previewFallbackTimer = window.setTimeout(() => {
+    closePreviewOverlay();
+    void chrome.runtime.sendMessage({ type: "PREVIEW_FALLBACK_STANDALONE" }).catch(() => {});
+  }, 1800);
 }
 
-async function openNavigator(): Promise<void> {
-  if (host) {
-    closeNavigator();
-    return;
-  }
+// Messages from the React app inside the iframe (cross-frame postMessage).
+window.addEventListener("message", (event) => {
+  const data = event.data as { source?: string; type?: string } | undefined;
+  if (data?.source !== "tabknight-preview") return;
+  if (data.type === "ready") window.clearTimeout(previewFallbackTimer);
+  if (data.type === "close") closePreviewOverlay();
+});
 
-  const response = await runtimeMessage<QueryResponse>({ type: "TAB_NAVIGATOR_QUERY" });
-  if (!response.ok || !response.tabs) return;
-
-  tabs = response.tabs;
-  currentWindowId = response.currentWindowId ?? null;
-  query = "";
-  activeIndex = 0;
-
-  host = document.createElement("div");
-  host.id = HOST_ID;
-  shadow = host.attachShadow({ mode: "open" });
-  document.documentElement.appendChild(host);
-
-  render();
-}
-
+// Esc closes even when focus sits on the page backdrop rather than the iframe.
 document.addEventListener(
   "keydown",
   (event) => {
-    if (host && !event.metaKey && !event.ctrlKey && !event.altKey) {
-      const target = event.target as HTMLElement | null;
-      const targetIsInput =
-        target?.tagName === "INPUT" ||
-        target?.tagName === "TEXTAREA" ||
-        target?.isContentEditable;
-
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        event.stopPropagation();
-        moveSelection(1);
-        focusNavigatorInput();
-        return;
-      }
-
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        event.stopPropagation();
-        moveSelection(-1);
-        focusNavigatorInput();
-        return;
-      }
-
-      if (event.key === "Enter") {
-        event.preventDefault();
-        event.stopPropagation();
-        void selectActiveItem();
-        return;
-      }
-
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        closeNavigator();
-        return;
-      }
-
-      if (!targetIsInput && event.key === "Backspace") {
-        event.preventDefault();
-        event.stopPropagation();
-        query = query.slice(0, -1);
-        activeIndex = 0;
-        render();
-        return;
-      }
-
-      if (
-        !targetIsInput &&
-        event.key.length === 1 &&
-        !event.repeat
-      ) {
-        event.preventDefault();
-        event.stopPropagation();
-        query += event.key;
-        activeIndex = 0;
-        render();
-        return;
-      }
+    if (previewHost && event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closePreviewOverlay();
     }
-
-    const key = event.key.toLowerCase();
-    const isCmdCtrlT =
-      event.metaKey &&
-      event.ctrlKey &&
-      !event.altKey &&
-      !event.shiftKey &&
-      key === "t";
-
-    if (!isCmdCtrlT) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    void openNavigator();
   },
   true
 );
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === "TAB_NAVIGATOR_TOGGLE") {
-    void openNavigator().then(() => sendResponse({ ok: true }));
+  if (message?.type === "PREVIEW_OVERLAY_TOGGLE") {
+    openPreviewOverlay();
+    sendResponse({ ok: true });
     return true;
   }
 

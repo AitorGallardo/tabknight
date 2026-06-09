@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { TabNavigatorView } from "./views/TabNavigatorView";
+import { TabPreviewView } from "./views/TabPreviewView";
 import { SaveTabsView } from "./views/SaveTabsView";
 import { CloseTabsView } from "./views/CloseTabsView";
 import { RestoreView } from "./views/RestoreView";
@@ -16,6 +17,7 @@ interface StandaloneContext {
 export function App() {
   const searchParams = new URLSearchParams(window.location.search);
   const isStandaloneNavigator = searchParams.get("standalone") === "1";
+  const isOverlay = searchParams.get("overlay") === "1";
   const contextId = searchParams.get("context");
   const [view, setView] = useState<AppView>("navigator");
   const [saveSummary, setSaveSummary] = useState<SaveSummary | null>(null);
@@ -44,6 +46,18 @@ export function App() {
     };
   }, [contextId, isStandaloneNavigator]);
 
+  useEffect(() => {
+    if (!isOverlay) return;
+    // The page behind the iframe provides the backdrop; keep the frame see-through
+    // so the panel's rounded corners reveal it.
+    const previous = document.body.style.background;
+    document.documentElement.style.background = "transparent";
+    document.body.style.background = "transparent";
+    return () => {
+      document.body.style.background = previous;
+    };
+  }, [isOverlay]);
+
   const handleSaveComplete = (summary: SaveSummary) => {
     setSaveSummary(summary);
     setView("close");
@@ -57,6 +71,14 @@ export function App() {
     setView("save");
     setSaveSummary(null);
   };
+
+  if (isOverlay) {
+    return (
+      <div className="h-screen w-screen overflow-hidden bg-transparent">
+        <TabPreviewView overlay returnToTabId={null} />
+      </div>
+    );
+  }
 
   if (isStandaloneNavigator) {
     return (
@@ -85,20 +107,8 @@ export function App() {
           }}
         />
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(60%_60%_at_50%_50%,transparent,rgba(5,6,10,0.42))]" />
-        <div className="relative w-full max-w-[760px]" style={{ height: 430 }}>
-          {view === "navigator" && (
-            <TabNavigatorView
-              onOpenSaveFlow={() => setView("save")}
-              showSaveButton={false}
-              temporary
-              returnToTabId={standaloneContext?.returnToTabId ?? null}
-            />
-          )}
-          {view === "save" && <SaveTabsView onSaveComplete={handleSaveComplete} />}
-          {view === "close" && saveSummary && (
-            <CloseTabsView saveSummary={saveSummary} onComplete={handleCloseComplete} />
-          )}
-          {view === "restore" && <RestoreView onBack={handleBackToSave} />}
+        <div className="relative w-full" style={{ maxWidth: 1040, height: 620 }}>
+          <TabPreviewView returnToTabId={standaloneContext?.returnToTabId ?? null} />
         </div>
       </div>
     );

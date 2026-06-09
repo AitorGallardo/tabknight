@@ -1,19 +1,13 @@
-// Background service worker for Tab Saver extension
-// Updates badge count when tabs change
+// Background service worker.
+// - Keeps the toolbar badge in sync with the open-tab count.
+// - Persists content-card snapshots harvested by the content script.
+// - Opens the tab-preview overlay (Cmd+K), falling back to a standalone tab
+//   on restricted pages where a content script can't be injected.
 
 import { updateBadgeCount } from "../popup/lib/chrome-api";
-
-function toQueryUrl(raw: string): string {
-  const query = raw.trim();
-  if (!query) return "chrome://newtab/";
-
-  const hasProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(query);
-  const looksLikeHost = /^[^\s]+\.[^\s]+$/.test(query);
-
-  if (hasProtocol) return query;
-  if (looksLikeHost) return `https://${query}`;
-  return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-}
+import { putCard, pruneCards } from "../popup/lib/preview/db";
+import { captureActiveTabThumbnail } from "../popup/lib/preview/thumbnail";
+import type { ContentCard } from "../popup/lib/preview/types";
 
 async function injectContentScriptIntoOpenTabs(): Promise<void> {
   const tabs = await chrome.tabs.query({
@@ -36,9 +30,9 @@ async function injectContentScriptIntoOpenTabs(): Promise<void> {
   );
 }
 
-async function ensureAndToggleNavigator(tabId: number): Promise<boolean> {
+async function ensureAndTogglePreview(tabId: number): Promise<boolean> {
   try {
-    await chrome.tabs.sendMessage(tabId, { type: "TAB_NAVIGATOR_TOGGLE" });
+    await chrome.tabs.sendMessage(tabId, { type: "PREVIEW_OVERLAY_TOGGLE" });
     return true;
   } catch {
     try {
@@ -46,7 +40,7 @@ async function ensureAndToggleNavigator(tabId: number): Promise<boolean> {
         target: { tabId },
         files: ["content/index.js"],
       });
-      await chrome.tabs.sendMessage(tabId, { type: "TAB_NAVIGATOR_TOGGLE" });
+      await chrome.tabs.sendMessage(tabId, { type: "PREVIEW_OVERLAY_TOGGLE" });
       return true;
     } catch {
       return false;
@@ -54,8 +48,11 @@ async function ensureAndToggleNavigator(tabId: number): Promise<boolean> {
   }
 }
 
-async function openStandaloneNavigator(sourceTab?: chrome.tabs.Tab): Promise<void> {
-  const contextId = `navigator-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+// Restricted pages (chrome://, the Web Store, …) can't host the overlay, so we
+// open the preview in a standalone tab and capture the source tab's screenshot
+// to use as a blurred backdrop.
+async function openStandalonePreview(sourceTab?: chrome.tabs.Tab): Promise<void> {
+  const contextId = `preview-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   let backgroundImage: string | undefined;
 
   if (sourceTab?.windowId !== undefined) {
@@ -77,13 +74,48 @@ async function openStandaloneNavigator(sourceTab?: chrome.tabs.Tab): Promise<voi
     },
   });
 
+  const params = new URLSearchParams({ standalone: "1", view: "preview", context: contextId });
+
   await chrome.tabs.create({
-    url: chrome.runtime.getURL(`popup/index.html?standalone=1&context=${encodeURIComponent(contextId)}`),
+    url: chrome.runtime.getURL(`popup/index.html?${params.toString()}`),
     active: true,
     ...(sourceTab?.windowId !== undefined ? { windowId: sourceTab.windowId } : {}),
     ...(typeof sourceTab?.index === "number" ? { index: sourceTab.index + 1 } : {}),
   });
 }
+
+/* ----------------------- pixel-thumbnail capture ------------------------- */
+// Snapshot the active tab when the user arrives on it, when it finishes
+// loading, and when they settle after scrolling — so the stored image reflects
+// the page roughly as last seen. Throttled per tab and serialized globally to
+// respect Chrome's captureVisibleTab rate limit.
+
+const MIN_CAPTURE_INTERVAL = 3000;
+const lastCaptureAt = new Map<number, number>();
+let captureInFlight = false;
+
+async function maybeCapture(tab: chrome.tabs.Tab | undefined): Promise<void> {
+  if (!tab?.id || !tab.active) return;
+
+  const now = Date.now();
+  if (now - (lastCaptureAt.get(tab.id) ?? 0) < MIN_CAPTURE_INTERVAL) return;
+  if (captureInFlight) return;
+
+  lastCaptureAt.set(tab.id, now);
+  captureInFlight = true;
+  try {
+    await captureActiveTabThumbnail(tab);
+  } finally {
+    captureInFlight = false;
+  }
+}
+
+// Captures are driven by the content script (PREVIEW_REQUEST_CAPTURE), which
+// only asks when the page is scrolled to the top — so stored thumbnails always
+// show the top of the page, never a mid-scroll position.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  lastCaptureAt.delete(tabId);
+});
 
 // Update badge on startup
 chrome.runtime.onInstalled.addListener(() => {
@@ -118,7 +150,7 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
   }
 });
 
-// Global keyboard command to open TabKnight navigator quickly
+// Cmd+K — toggle the tab-preview overlay on the active tab.
 chrome.commands.onCommand.addListener(async (command) => {
   if (command !== "open_tab_navigator") return;
 
@@ -128,76 +160,37 @@ chrome.commands.onCommand.addListener(async (command) => {
   });
 
   if (activeTab?.id !== undefined) {
-    const opened = await ensureAndToggleNavigator(activeTab.id);
+    const opened = await ensureAndTogglePreview(activeTab.id);
     if (opened) return;
   }
 
-  await openStandaloneNavigator(activeTab);
+  await openStandalonePreview(activeTab);
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const handle = async () => {
-    if (message?.type === "TAB_NAVIGATOR_OPEN_STANDALONE") {
-      await openStandaloneNavigator(sender.tab);
-      sendResponse({ ok: true });
-      return;
-    }
-
-    if (message?.type === "TAB_NAVIGATOR_QUERY") {
-      const [tabs, focusedWindow] = await Promise.all([
-        chrome.tabs.query({}),
-        chrome.windows.getCurrent(),
-      ]);
-
-      const currentWindowId = sender.tab?.windowId ?? focusedWindow.id ?? null;
-
-      const result = tabs
-        .filter(
-          (tab): tab is chrome.tabs.Tab & { id: number; windowId: number; url: string } =>
-            tab.id !== undefined &&
-            tab.windowId !== undefined &&
-            !!tab.url
-        )
-        .map((tab) => ({
-          id: tab.id,
-          windowId: tab.windowId,
-          title: tab.title || tab.url,
-          url: tab.url,
-          favIconUrl: tab.favIconUrl,
-          pinned: tab.pinned || false,
-          active: tab.active || false,
-          index: tab.index || 0,
-          lastAccessed: (tab as chrome.tabs.Tab & { lastAccessed?: number }).lastAccessed || 0,
-        }));
-
-      sendResponse({ ok: true, tabs: result, currentWindowId });
-      return;
-    }
-
-    if (message?.type === "TAB_NAVIGATOR_ACTIVATE") {
-      const tabId = Number(message.tabId);
-      const targetTab = await chrome.tabs.get(tabId);
-      const targetWindowId = targetTab.windowId;
-
-      await chrome.windows.update(targetWindowId, { focused: true });
-      await chrome.tabs.update(tabId, { active: true });
-
-      if (typeof targetTab.index === "number") {
-        await chrome.tabs.highlight({ windowId: targetWindowId, tabs: targetTab.index });
+    if (message?.type === "PREVIEW_CARD_CAPTURE") {
+      const card = message.card as ContentCard | undefined;
+      if (card?.urlHash) {
+        // Prefer the live favicon Chrome already resolved for the tab.
+        if (sender.tab?.favIconUrl) card.favIconUrl = sender.tab.favIconUrl;
+        await putCard(card);
+        await pruneCards();
       }
-
       sendResponse({ ok: true });
       return;
     }
 
-    if (message?.type === "TAB_NAVIGATOR_OPEN_QUERY") {
-      const windowId = sender.tab?.windowId;
-      const url = toQueryUrl(typeof message.query === "string" ? message.query : "");
-      await chrome.tabs.create({
-        url,
-        active: true,
-        ...(windowId !== undefined ? { windowId } : {}),
-      });
+    if (message?.type === "PREVIEW_REQUEST_CAPTURE") {
+      // Sent by the content script after the user settles (e.g. stops
+      // scrolling) so the stored image matches what they last looked at.
+      await maybeCapture(sender.tab);
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (message?.type === "PREVIEW_FALLBACK_STANDALONE") {
+      await openStandalonePreview(sender.tab);
       sendResponse({ ok: true });
       return;
     }
