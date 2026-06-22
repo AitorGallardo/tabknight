@@ -22,6 +22,14 @@ TabKnight turns Chrome's tab strip into a fast, keyboard-driven command surface.
 
 It's local-first (everything lives in your browser, zero network calls), and it degrades gracefully even on Chrome's own internal pages.
 
+<div align="center">
+
+<img src="docs/screenshots/overlay.jpg" alt="TabKnight's ⌘K overlay: a fuzzy-searchable tab list beside a live preview pane, floating over the current page" width="900" />
+
+<sub>The <code>⌘K</code> overlay floats over your current page — fuzzy-search every tab, preview where you're headed, and jump there with <kbd>Enter</kbd>.</sub>
+
+</div>
+
 ## ⌨️ Keyboard shortcuts
 
 TabKnight is keyboard-first by design — you rarely need the mouse.
@@ -58,6 +66,14 @@ TabKnight is keyboard-first by design — you rarely need the mouse.
 
 Press `⌘ K` and a command palette blends in over the current page; you never get bounced to a new tab.
 
+<div align="center">
+
+<img src="docs/screenshots/demo.gif" alt="Animated demo: opening the overlay, arrowing through tabs as previews update live, and switching tabs" width="900" />
+
+<sub>Arrow through tabs and the preview updates live — switch with <kbd>Enter</kbd>, dismiss with <kbd>Esc</kbd>.</sub>
+
+</div>
+
 - **Live fuzzy search** across every open tab in **every window** — matches title and URL.
 - **Tiered, never-blank previews.** Each result renders the best tier available *right now* and upgrades in place — no spinners, no empty panes:
   - **Tier 0** — favicon + title (instant, always).
@@ -65,6 +81,19 @@ Press `⌘ K` and a command palette blends in over the current page; you never g
   - **Tier 2** — a real pixel thumbnail of the page, captured in the background.
 - **Recency-grouped list** when you're not searching, so your most-relevant tabs are one glance away.
 - **Auto-scroll** keeps the active row comfortably in view as you arrow through results.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/preview-docs.jpg" alt="TabKnight previewing a documentation tab with a live page thumbnail" />
+      <br /><sub>A live page thumbnail for the highlighted tab — title, URL, and a snippet right beside it.</sub>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/preview-card.jpg" alt="TabKnight previewing a profile tab as a rich metadata card" />
+      <br /><sub>Rich metadata card when there's no thumbnail yet — it upgrades in place, never blank.</sub>
+    </td>
+  </tr>
+</table>
 
 ### 🪟 Cross-window search & switch
 
@@ -165,6 +194,7 @@ tabknight/
 │        ├─ chrome-api.ts      # async wrappers around Chrome APIs
 │        └─ preview/           # harvester · db (IndexedDB) · thumbnail · hash
 ├─ config/build.ts            # Bun build orchestration
+├─ docs/screenshots/         # README imagery (overlay, previews, demo gif)
 └─ changelog.mdx              # release history
 ```
 
