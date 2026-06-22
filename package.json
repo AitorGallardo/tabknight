@@ -1,6 +1,6 @@
 {
   "name": "tabknight",
-  "version": "0.17.3",
+  "version": "0.17.4",
   "description": "Chrome extension to save open tabs as bookmarks",
   "type": "module",
   "scripts": {

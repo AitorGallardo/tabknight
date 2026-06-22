@@ -1,354 +1,207 @@
+<div align="center">
+
+<img src="public/icons/tabknight_icon.png" alt="TabKnight" width="128" height="128" />
+
 # TabKnight
 
-TabKnight is a Chrome Manifest V3 extension for keyboard-first tab navigation and lightweight session management.
+**Keyboard-first tab navigation for Chrome — search, preview, and switch tabs without ever leaving the page.**
 
-The project has two core jobs:
-- provide an Arc-style tab switcher that prioritizes speed, keyboard control, and cross-window tab jumping
-- provide a compact popup workflow for saving, closing, and restoring tab sets as bookmark-backed sessions
+[![Chrome Manifest V3](https://img.shields.io/badge/Chrome-Manifest_V3-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white)](https://developer.chrome.com/docs/extensions/mv3/intro/)
+[![Bun](https://img.shields.io/badge/Bun-000000?style=for-the-badge&logo=bun&logoColor=white)](https://bun.sh/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![React 18](https://img.shields.io/badge/React_18-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev/)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge)](./LICENSE)
+[![Version](https://img.shields.io/badge/version-0.17.4-6366f1?style=for-the-badge)](./changelog.mdx)
 
-The navigator is intentionally split by browser capability:
-- on normal web pages, TabKnight renders an in-page translucent command dialog overlay
-- on restricted Chrome-native pages such as `chrome://extensions/`, where Chrome blocks content scripts, TabKnight falls back to a temporary extension-owned navigator tab in the same browser window
+</div>
 
-## Core Features
+---
 
-### Arc-style Tab Navigator
+TabKnight turns Chrome's tab strip into a fast, keyboard-driven command surface. Hit one shortcut and a glassmorphic palette appears **over your current page** — fuzzy-search every tab in every window, see a real preview of where you're going, and jump there with `Enter`. When you're done, save a working set of tabs as a bookmark-backed session and restore it later.
 
-- `Cmd+K` on macOS opens the tab navigator
-- `Cmd+Ctrl+T` also opens the in-page navigator on normal web pages
-- search matches against tab title and URL
-- results include tabs across all Chrome windows
-- results include Chrome-native tabs such as:
-  - `chrome://extensions/`
-  - `chrome://settings/`
-  - `chrome://history/`
-- `Enter` activates the selected tab or opens the typed query in a new tab
-- `Arrow Up` / `Arrow Down` move through results
-- `Escape` closes the navigator
-- the active row auto-scrolls into view and preserves bottom breathing so the focused item does not stick to the frame edge
-- the full matching result set is shown; results are no longer artificially capped to a small subset
+It's local-first (everything lives in your browser, zero network calls), and it degrades gracefully even on Chrome's own internal pages.
 
-### Strong Keyboard UX
+<div align="center">
 
-- the navigator is built to remain usable even if the input loses DOM focus inside the active window
-- arrow keys, `Enter`, `Escape`, `Backspace`, and printable characters continue working while the navigator is open
-- clicking non-interactive space inside the panel re-focuses the search input
-- the input caret is restored to the end of the current query so typing can continue naturally
+<img src="docs/screenshots/overlay.jpg" alt="TabKnight's ⌘K overlay: a fuzzy-searchable tab list beside a live preview pane, floating over the current page" width="900" />
 
-### Cross-window Tab Switching
+<sub>The <code>⌘K</code> overlay floats over your current page — fuzzy-search every tab, preview where you're headed, and jump there with <kbd>Enter</kbd>.</sub>
 
-- selecting a tab can jump across Chrome windows
-- TabKnight focuses the destination window before activating the chosen tab
-- when possible, the extension also highlights the selected tab index to preserve a stable transition in the target window
+</div>
 
-### Query-to-Open Flow
+## ⌨️ Keyboard shortcuts
 
-If the query does not correspond to an existing tab:
-- TabKnight can open a URL directly
-- or open a search query in a new tab
+TabKnight is keyboard-first by design — you rarely need the mouse.
 
-### Save Tabs as Bookmark-backed Sessions
+**Global**
 
-From the popup:
-- save the current selection of tabs into a bookmark folder
-- organize tabs by domain for fast bulk selection
-- keep favicon context where available
+| Shortcut | Action |
+| --- | --- |
+| `⌘ K` (macOS) · `Ctrl Shift K` (Win/Linux) | Open the tab-preview overlay on the current page |
 
-### Close and Restore Saved Sessions
+> Rebind it anytime at `chrome://extensions/shortcuts`.
 
-From the popup:
-- close saved tabs in bulk
-- restore a saved bookmark-backed tab set
-- use the popup as a compact operational surface for tab housekeeping
+**Inside the overlay / navigator**
 
-## How The Extension Works
+| Shortcut | Action |
+| --- | --- |
+| `↑` · `↓` | Move the selection |
+| `Enter` | Switch to the selected tab (or open the typed query) |
+| `Esc` | Close and return to your page |
+| _type…_ | Filter instantly — the search stays focused even if focus drifts |
+| `Backspace` | Edit the query without clicking back into the input |
 
-## 1. Background Service Worker
+**Popup — save flow**
 
-File: `/Users/aitor/dev/tabknight/src/background/index.ts`
+| Shortcut | Action |
+| --- | --- |
+| `Enter` | Save the selected tabs |
+| `⌘ A` · `Ctrl A` | Select all |
+| `Esc` | Close the popup |
 
-The background script is the runtime coordinator.
+## ✨ Features
 
-It is responsible for:
-- listening for the extension command declared in the manifest
-- deciding whether to open the in-page navigator or the restricted-page fallback
-- querying Chrome for tabs and window context
-- switching to selected tabs across windows
-- opening URL/search queries in new tabs
-- capturing the current visible tab for restricted-page fallback backdrop rendering
-- reinjecting the content script when needed on supported pages
-- passing fallback state through `chrome.storage.local`
+### 🎯 Tab-preview overlay — the flagship
 
-This is a Manifest V3 service worker, not a persistent background page.
+Press `⌘ K` and a command palette blends in over the current page; you never get bounced to a new tab.
 
-## 2. In-page Navigator Overlay
+<div align="center">
 
-File: `/Users/aitor/dev/tabknight/src/content/index.ts`
+<img src="docs/screenshots/demo.gif" alt="Animated demo: opening the overlay, arrowing through tabs as previews update live, and switching tabs" width="900" />
 
-On pages where content scripts are allowed, TabKnight mounts a shadow-DOM overlay that behaves like a modal command palette.
+<sub>Arrow through tabs and the preview updates live — switch with <kbd>Enter</kbd>, dismiss with <kbd>Esc</kbd>.</sub>
 
-This layer provides:
-- a centered dark translucent panel
-- blurred glass backdrop over the current page
-- search-focused header row
-- compact, high-contrast results
-- keyboard-first movement and selection
-- local rendering isolated from host-page CSS through a shadow root
+</div>
 
-Why the shadow root matters:
-- it prevents site CSS from breaking the navigator layout
-- it keeps scrollbar and focus styling consistent
-- it makes the overlay more reliable across arbitrary websites
+- **Live fuzzy search** across every open tab in **every window** — matches title and URL.
+- **Tiered, never-blank previews.** Each result renders the best tier available *right now* and upgrades in place — no spinners, no empty panes:
+  - **Tier 0** — favicon + title (instant, always).
+  - **Tier 1** — rich card from page metadata (`og:image`, site name, description).
+  - **Tier 2** — a real pixel thumbnail of the page, captured in the background.
+- **Recency-grouped list** when you're not searching, so your most-relevant tabs are one glance away.
+- **Auto-scroll** keeps the active row comfortably in view as you arrow through results.
 
-## 3. Restricted-page Fallback
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/preview-docs.jpg" alt="TabKnight previewing a documentation tab with a live page thumbnail" />
+      <br /><sub>A live page thumbnail for the highlighted tab — title, URL, and a snippet right beside it.</sub>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/preview-card.jpg" alt="TabKnight previewing a profile tab as a rich metadata card" />
+      <br /><sub>Rich metadata card when there's no thumbnail yet — it upgrades in place, never blank.</sub>
+    </td>
+  </tr>
+</table>
 
-Files:
-- `/Users/aitor/dev/tabknight/src/background/index.ts`
-- `/Users/aitor/dev/tabknight/src/popup/App.tsx`
-- `/Users/aitor/dev/tabknight/src/popup/views/TabNavigatorView.tsx`
+### 🪟 Cross-window search & switch
 
-Chrome blocks content scripts on internal pages such as `chrome://extensions/`.
-That means TabKnight cannot inject the same in-page overlay into those pages.
+Results span all of your Chrome windows. Selecting a tab focuses its destination window first, then activates it — a clean, stable jump even across displays.
 
-When that happens, TabKnight:
-- opens a temporary extension tab in the same browser window
-- places it next to the origin tab
-- captures the origin tab visually and uses that image as a blurred backdrop
-- overlays a halftone + vignette treatment so the fallback does not feel like a flat blank page
-- renders the same navigator interaction model in the temporary tab
-- closes that temporary tab after selection
-- returns focus to the origin tab on `Escape`
+### 🔎 Query-to-open
 
-This is the closest extension-safe approximation of a true in-page modal on Chrome-native surfaces.
+No match for what you typed? `Enter` opens it directly — as a URL if it looks like one, otherwise as a search in a fresh tab.
 
-## 4. Popup Session Manager
+### 🔖 Bookmark-backed sessions
 
-File: `/Users/aitor/dev/tabknight/src/popup/App.tsx`
+From the popup, treat a pile of tabs as a session:
 
-The popup remains useful as the operational control surface for saving and restoring tabs.
+- **Save** the current tabs into a bookmark folder — grouped by domain, bulk-selectable, with smart date-named folders.
+- **Close** them in bulk right after saving (with a "copy all URLs" escape hatch).
+- **Restore** any saved folder to reopen the whole set in one click.
 
-It provides:
-- save flow
-- close flow
-- restore flow
-- navigator access when opened directly from the extension action
+### 🛡️ Works everywhere — even on `chrome://` pages
 
-UI constraints:
-- width: `400px`
-- height: `500px`
+Chrome blocks extensions from injecting UI into its own internal pages (`chrome://extensions/`, `chrome://settings/`, …). On those — and on strict-CSP sites — TabKnight falls back to a temporary tab opened **in the same window**, using a blurred screenshot of your origin page as the backdrop (with halftone + vignette) so it still feels in-context. It self-cleans and returns focus to your page on `Esc`.
 
-## Keyboard Shortcuts
+## 🧠 Under the hood
 
-### Supported
+The capabilities that make it feel instant and reliable:
 
-- `Cmd+K` (macOS): open tab navigator
-- `Cmd+Ctrl+T` (macOS): open in-page overlay on supported pages
-- `Enter`: activate selected tab or open query
-- `Arrow Up` / `Arrow Down`: move selection
-- `Escape`: dismiss navigator
+- **In-page without the mess.** The overlay is a content-script **shadow-DOM host** that paints a blurred backdrop, with an **extension-origin `<iframe>`** hosting the React panel. The shadow root isolates it from arbitrary site CSS; the iframe origin gives the panel direct IndexedDB access. If the iframe can't load (strict CSP), it falls back to the standalone tab.
+- **Snapshot pipeline — page → background → IndexedDB.** Content scripts can't reach the extension DB directly, so the content script *harvests* lightweight content cards (title, `og:*`, theme color, a short text excerpt) and messages them to the background service worker, which persists them to **IndexedDB** keyed by a normalized-URL hash.
+- **Real thumbnails, politely captured.** The active tab is screenshotted via `chrome.tabs.captureVisibleTab`, downscaled to **WebP**, and stored as a blob. Captures are **throttled per-tab and serialized globally** to respect Chrome's rate limits, and the store is **LRU-evicted** so it never grows unbounded.
+- **Local-first & private.** Everything lives in IndexedDB under `unlimitedStorage`. No servers, no accounts, no telemetry.
+- **Predictable ranking.** Results use a fast, transparent heuristic — exact-title beats prefix beats substring, URL matches contribute, active/pinned tabs get a small boost, and ties resolve toward the current window.
+- **Clean React core.** State via React Context + hooks; every Chrome API call is wrapped async/await in a single `chrome-api.ts` layer.
 
-### Important Chrome Constraint
+## 🔐 Permissions
 
-`Cmd+T` cannot be reliably overridden by an extension.
+Declared in [`public/manifest.json`](public/manifest.json) — each maps to a real feature:
 
-Chrome reserves that shortcut for opening a new tab at the browser level, and browser-level shortcuts are handled before page or extension UI code can consistently intercept them.
+| Permission | Why it's needed |
+| --- | --- |
+| `tabs` | Enumerate, activate, create, and close tabs; read titles/URLs/favicons |
+| `bookmarks` | Save and restore tab sets as bookmark folders |
+| `activeTab` | Operate on the current page for overlay injection and capture |
+| `windows` | Focus the destination window during cross-window switching |
+| `scripting` | (Re)inject the content script on supported pages |
+| `storage` | Hand off context between the background worker and the fallback UI |
+| `unlimitedStorage` | Room for the IndexedDB snapshot + thumbnail store |
+| `host_permissions: <all_urls>` | Run the overlay and capture previews on the sites you visit |
 
-## Browser Constraints And Tradeoffs
+## 🧰 Tech stack
 
-### Why the navigator cannot render directly inside `chrome://...` pages
+- **Bun** — bundler & runtime
+- **TypeScript** (strict mode)
+- **React 18**
+- **Tailwind CSS** + **shadcn/ui** (Mira style)
+- **Chrome Extension — Manifest V3** (service worker + content script)
 
-Chrome-native pages are privileged browser surfaces.
-Extensions cannot:
-- inject content scripts into them
-- mount DOM inside them
-- restyle their internal browser UI
-- replace Chrome's built-in tab search UI
+## 🚀 Getting started
 
-That is why TabKnight uses the temporary same-window fallback tab for those pages instead of a direct overlay.
-
-### Why Chrome's own tab search can appear there
-
-Chrome's native tab search (`Cmd+Shift+A`) is built into the browser itself, not delivered through extension APIs.
-It runs with internal browser privileges that extensions do not have.
-
-## Ranking And Result Behavior
-
-Tab results are ranked using a simple practical heuristic:
-- exact title match scores highest
-- title prefix match scores strongly
-- title substring match scores next
-- URL substring match also contributes
-- active tabs and pinned tabs get small boosts
-- when scores tie, current-window tabs are preferred
-- remaining ties are resolved by window and tab index
-
-This keeps results fast and predictable without introducing fuzzy-matching complexity.
-
-## Chrome APIs Used
-
-TabKnight uses Chrome APIs directly with async/await patterns.
-
-### Commands and runtime
-
-- `chrome.commands.onCommand`
-- `chrome.runtime.sendMessage`
-- `chrome.runtime.onMessage`
-
-### Tabs
-
-- `chrome.tabs.query`
-- `chrome.tabs.get`
-- `chrome.tabs.getCurrent`
-- `chrome.tabs.update`
-- `chrome.tabs.highlight`
-- `chrome.tabs.create`
-- `chrome.tabs.remove`
-- `chrome.tabs.captureVisibleTab`
-
-### Windows
-
-- `chrome.windows.getCurrent`
-- `chrome.windows.update`
-
-### Injection and state
-
-- `chrome.scripting.executeScript`
-- `chrome.storage.local`
-
-### Bookmarks and action
-
-- `chrome.bookmarks`
-- `chrome.action` badge/title APIs
-
-## Permissions
-
-Declared in `/Users/aitor/dev/tabknight/public/manifest.json`:
-- `tabs`
-- `bookmarks`
-- `activeTab`
-- `windows`
-- `scripting`
-- `storage`
-- `host_permissions: <all_urls>`
-
-Each permission maps to a real feature:
-- `tabs`: enumerate, activate, create, remove, and inspect tabs
-- `bookmarks`: save and restore tab sets as bookmark folders
-- `activeTab`: support active-page context when needed
-- `windows`: focus destination windows during cross-window switching
-- `scripting`: inject content scripts on supported pages
-- `storage`: hand off state between the background worker and temporary fallback UI
-- `<all_urls>`: allow the content script navigator to run on supported web pages
-
-## Tech Stack
-
-- TypeScript
-- React 18
-- Tailwind CSS
-- shadcn/ui
-- Bun
-- Chrome Extension Manifest V3
-
-## Project Structure
-
-- `/Users/aitor/dev/tabknight/src/background/index.ts`: background service worker and browser coordination
-- `/Users/aitor/dev/tabknight/src/content/index.ts`: shadow-DOM Arc-style in-page overlay
-- `/Users/aitor/dev/tabknight/src/popup/App.tsx`: popup shell and restricted-page fallback shell
-- `/Users/aitor/dev/tabknight/src/popup/views/TabNavigatorView.tsx`: shared React navigator used by popup and restricted fallback
-- `/Users/aitor/dev/tabknight/src/popup/views/SaveTabsView.tsx`: save-tabs flow
-- `/Users/aitor/dev/tabknight/src/popup/views/CloseTabsView.tsx`: close-tabs flow
-- `/Users/aitor/dev/tabknight/src/popup/views/RestoreView.tsx`: restore flow
-- `/Users/aitor/dev/tabknight/chrome_web_store/chrome_web_store.md`: store listing and launch copy
-- `/Users/aitor/dev/tabknight/changelog.mdx`: release history and project timeline
-
-## Development
-
-### Prerequisites
-
-- [Bun](https://bun.sh/)
-- Google Chrome
-
-### Install
+**Prerequisites:** [Bun](https://bun.sh/) and Google Chrome.
 
 ```bash
+# install dependencies
 bun install
-```
 
-### Typecheck
+# production build  →  ./dist
+bun run build
 
-```bash
+# watch mode (rebuilds on change)
+bun run dev
+
+# type-check
 bun run typecheck
 ```
 
-### Build
-
-```bash
-bun run build
-```
-
-### Watch mode
-
-```bash
-bun run dev
-```
-
-## Load The Extension In Chrome
+### Load the unpacked extension
 
 1. Open `chrome://extensions/`
-2. Enable **Developer mode**
+2. Enable **Developer mode** (top-right)
 3. Click **Load unpacked**
-4. Select `/Users/aitor/dev/tabknight/dist`
+4. Select the generated **`dist/`** folder
 5. After any code change, rebuild and click **Reload** on the extension card
 
-## Manual Verification Checklist
+## 🗺️ Project structure
 
-### Navigator on normal pages
+```
+tabknight/
+├─ public/
+│  ├─ manifest.json            # MV3 manifest — permissions, command, icons
+│  └─ icons/                   # tabknight_icon.png (source) + icon16/32/48/128
+├─ src/
+│  ├─ background/index.ts      # service worker: command routing, capture, badge, fallback
+│  ├─ content/index.ts         # shadow-DOM overlay host + content harvester + CSP fallback
+│  └─ popup/
+│     ├─ App.tsx               # view router (overlay / standalone / popup)
+│     ├─ views/                # TabPreview · TabNavigator · SaveTabs · CloseTabs · Restore
+│     ├─ components/           # tab list, domain groups, folder picker, shadcn/ui
+│     ├─ hooks/                # useTabs, useBookmarks, useTabSelection, useKeyboardShortcuts
+│     └─ lib/
+│        ├─ chrome-api.ts      # async wrappers around Chrome APIs
+│        └─ preview/           # harvester · db (IndexedDB) · thumbnail · hash
+├─ config/build.ts            # Bun build orchestration
+├─ docs/screenshots/         # README imagery (overlay, previews, demo gif)
+└─ changelog.mdx              # release history
+```
 
-- open any `https://` page
-- press `Cmd+K`
-- confirm the in-page Arc-style overlay appears
-- type part of a title or URL
-- verify the full list of matching results remains available
-- move with `Arrow Up` / `Arrow Down`
-- verify the active row stays visible and does not stick to the bottom edge
-- press `Enter` on an existing tab and confirm Chrome switches to it
+## 🔢 Versioning
 
-### Restricted-page fallback
+Semantic versioning while in `0.x`. Every shipped fix or feature bumps the version in **both** `package.json` and `public/manifest.json` (kept in sync), in the same commit as the change. See [`changelog.mdx`](changelog.mdx).
 
-- open `chrome://extensions/`
-- press `Cmd+K`
-- confirm a temporary adjacent extension tab opens in the same window
-- verify the fallback background uses a blurred contextual screenshot, halftone texture, and vignette treatment
-- press `Escape` and confirm focus returns to the origin tab
+## 📄 License
 
-### Search behavior
-
-- enter a search query that does not match an existing tab
-- press `Enter`
-- confirm a new tab is opened with the URL or search query
-
-### Session management
-
-- open the extension popup
-- save a tab set into a bookmark folder
-- close tabs using the close flow
-- restore them from the restore flow
-
-## Release And Versioning
-
-- Current version: `0.15.4`
-- SemVer is used while the project remains in major version `0`
-- `package.json` and `public/manifest.json` must stay synchronized
-- patch bumps cover non-breaking fixes, refinements, and internal changes
-- minor bumps cover new user-facing features, new permissions, or new UX flows
-
-## Documentation And Store Assets
-
-Release-supporting docs are stored in:
-- `/Users/aitor/dev/tabknight/chrome_web_store/chrome_web_store.md`
-- `/Users/aitor/dev/tabknight/chrome_web_store/images/`
-- `/Users/aitor/dev/tabknight/changelog.mdx`
-
-## License
-
-[MIT](/Users/aitor/dev/tabknight/LICENSE)
+[MIT](./LICENSE) © 2025 Aitor Gallardo
