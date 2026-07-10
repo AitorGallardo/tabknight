@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Globe, Music, Pause, Play, Search, Volume2, VolumeX, X } from "lucide-react";
+import type { ReactNode, SyntheticEvent } from "react";
+import { AppWindow, Globe, Moon, Music, Pause, Pin, Play, Search, Volume2, VolumeX, X } from "lucide-react";
 import { activateTab, getAllTabs, setTabMuted } from "../lib/chrome-api";
 import { getAllCards, getThumbnail } from "../lib/preview/db";
 import { hashUrl } from "../lib/preview/hash";
-import type { AudibleStateChangedMessage, ContentCard, MediaControlResult } from "../lib/preview/types";
+import type {
+  AudibleStateChangedMessage,
+  ContentCard,
+  MediaControlResult,
+  TabThumbnail,
+} from "../lib/preview/types";
 import { AudioEq } from "../components/AudioEq";
 import { scoreTab } from "../lib/rank";
 import { useListNavigation } from "../hooks/useListNavigation";
@@ -42,6 +48,7 @@ interface NavigatorTab {
   lastAccessed: number;
   audible?: boolean;
   muted?: boolean;
+  discarded?: boolean;
 }
 
 /** Per-tab UI playback state for the Audio Playground (audio mode). */
@@ -56,6 +63,25 @@ const HINT_MS = 2500;
 const THUMB_DEBOUNCE_MS = 70;
 
 const DAY = 24 * 60 * 60 * 1000;
+
+/* -------------------------- preview-fidelity spec -------------------------- */
+const HERO_ASPECT = "16 / 10";
+const OG_MIN_WIDTH_PX = 200;
+const OG_SQUARE_LO = 0.8;
+const OG_SQUARE_HI = 1.25;
+const THUMB_UPSCALE_MAX = 1.15;
+const FRESH_TICK_MS = 30_000;
+const STALE_LABEL_MS = 3_600_000;
+const PREFETCH_RADIUS = 2;
+const MAX_ROW_GLYPHS = 2;
+const THUMB_CACHE_MAX = 12;
+const THUMB_PREFETCH_CONCURRENCY = 3;
+/** Approximate box height reserved before a row mounts (content-visibility). */
+const ROW_CONTAIN_SIZE = "0 36px";
+/** Rows with a domain subtitle (duplicate titles) render a second line — reserve more height. */
+const ROW_CONTAIN_SIZE_DUPLICATE = "0 44px";
+/** Only pay the content-visibility bookkeeping cost once lists get long. */
+const CONTENT_VISIBILITY_THRESHOLD = 60;
 
 /** Group label for the left rail, à la Grok's "Today / Last 7 days / ...". */
 function bucketLabel(lastAccessed: number, now: number): string {
@@ -87,6 +113,131 @@ function domainOf(url: string): string {
   }
 }
 
+/**
+ * Highlight the first case-insensitive substring match of `query` in `text`.
+ * scoreTab (lib/rank.ts) only ever awards title points via `===`/`startsWith`/
+ * `includes` — all substring checks, never a fuzzy subsequence — so a single
+ * contiguous match is always the right span to highlight.
+ */
+function highlightTitle(text: string, query: string, active: boolean): ReactNode {
+  const q = query.trim();
+  if (!q) return text;
+  const idx = text.toLowerCase().indexOf(q.toLowerCase());
+  if (idx === -1) return text;
+  const before = text.slice(0, idx);
+  const match = text.slice(idx, idx + q.length);
+  const after = text.slice(idx + q.length);
+  const matchClass = active ? "rounded-[3px] bg-white/25 px-[1px] text-white" : "rounded-[3px] bg-white/15 px-[1px] text-white";
+  return (
+    <>
+      {before}
+      <span className={matchClass}>{match}</span>
+      {after}
+    </>
+  );
+}
+
+type RowGlyph = "audible" | "muted" | "pinned" | "discarded" | "other-window";
+
+/** Trailing status glyphs for a tabs-mode row, priority-ordered, capped. */
+function rowGlyphs(tab: NavigatorTab, currentWindowId: number | null): RowGlyph[] {
+  const candidates: RowGlyph[] = [];
+  if (tab.audible) candidates.push("audible");
+  if (tab.muted) candidates.push("muted");
+  if (tab.pinned) candidates.push("pinned");
+  if (tab.discarded) candidates.push("discarded");
+  if (currentWindowId !== null && tab.windowId !== currentWindowId) candidates.push("other-window");
+  return candidates.slice(0, MAX_ROW_GLYPHS);
+}
+
+function RowGlyphs({ tab, currentWindowId, active }: { tab: NavigatorTab; currentWindowId: number | null; active: boolean }) {
+  const glyphs = rowGlyphs(tab, currentWindowId);
+  if (glyphs.length === 0) return null;
+  const iconClass = active ? "h-3 w-3 text-white/75" : "h-3 w-3 text-white/35";
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      {glyphs.map((glyph) => {
+        switch (glyph) {
+          case "audible":
+            return (
+              <span key="audible" className="scale-[0.85]">
+                <AudioEq playing />
+              </span>
+            );
+          case "muted":
+            return <VolumeX key="muted" className={iconClass} />;
+          case "pinned":
+            return <Pin key="pinned" className={iconClass} />;
+          case "discarded":
+            return <Moon key="discarded" className={active ? "h-3 w-3 text-white/75" : "h-3 w-3 text-white/30"} />;
+          case "other-window":
+            return (
+              <span
+                key="other-window"
+                className={`grid place-items-center rounded-[3px] border px-1 text-[9px] leading-none ${
+                  active ? "border-white/25 text-white/75" : "border-white/15 text-white/40"
+                }`}
+              >
+                <AppWindow className="h-2.5 w-2.5" />
+              </span>
+            );
+        }
+      })}
+    </span>
+  );
+}
+
+/** Tier-2-only freshness chip: green dot + relative time while recent, dims after STALE_LABEL_MS. */
+function FreshnessChip({ capturedAt, now }: { capturedAt: number; now: number }) {
+  const fresh = now - capturedAt < STALE_LABEL_MS;
+  return (
+    <span className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-black/45 px-2 py-0.5 text-[10px] font-medium text-white/80 backdrop-blur-md ring-1 ring-white/10">
+      <span className={`h-1.5 w-1.5 rounded-full ${fresh ? "bg-[#30d158]" : "bg-white/40"}`} />
+      <span className={fresh ? undefined : "text-white/50"}>{relativeTime(capturedAt, now)}</span>
+    </span>
+  );
+}
+
+/** Top-edge scrim shared by every image-backed hero tier for text/chip contrast. */
+function HeroTopScrim() {
+  return <div className="pointer-events-none absolute inset-x-0 top-0 h-8 bg-gradient-to-b from-black/25 to-transparent" />;
+}
+
+/** Tier 0.5 — replaces the giant favicon fallback with a title/description card. */
+function HeroTypographicCard({ tab, card }: { tab: NavigatorTab; card?: ContentCard }) {
+  const themeColor = card?.themeColor;
+  const siteName = card?.siteName || domainOf(tab.url);
+  return (
+    <div
+      className="relative flex h-full flex-col justify-end overflow-hidden p-6"
+      style={{ background: `linear-gradient(155deg, ${themeColor || "#1c1c1e"}33 0%, rgba(10,10,12,0.6) 70%)` }}
+    >
+      <div
+        className="pointer-events-none absolute -left-16 -top-16 h-48 w-48 rounded-full blur-3xl"
+        style={{ background: `${themeColor || "#0a84ff"}22` }}
+      />
+      <div className="relative">
+        <div className="mb-3 flex items-center gap-2">
+          <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md bg-white/[0.08]">
+            {tab.favIconUrl ? (
+              <img src={tab.favIconUrl} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+            ) : (
+              <Globe className="h-3.5 w-3.5 text-white/60" />
+            )}
+          </span>
+          <span className="truncate text-[12px] font-medium tracking-[-0.01em] text-white/55">{siteName}</span>
+        </div>
+        <h2 className="line-clamp-2 text-[22px] font-semibold leading-tight tracking-[-0.02em] text-white/95">
+          {tab.title}
+        </h2>
+        {card?.description && (
+          <p className="line-clamp-3 mt-2 text-[13px] leading-relaxed text-white/60">{card.description}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPreviewViewProps) {
   const [tabs, setTabs] = useState<NavigatorTab[]>([]);
   const [cards, setCards] = useState<Map<string, ContentCard>>(new Map());
@@ -95,7 +246,13 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   const [currentWindowId, setCurrentWindowId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const inputRef = useRef<HTMLInputElement>(null);
-  const now = useMemo(() => Date.now(), [tabs]);
+  // Live clock, ticked every FRESH_TICK_MS — drives the freshness chip's
+  // "just now"/"Nm ago" label and the metadata pane's "captured …" text.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), FRESH_TICK_MS);
+    return () => clearInterval(id);
+  }, []);
 
   // Audio Playground (Cmd+K "audio" mode): tabs mode is the default, primary
   // surface; audio mode is entered via the ♪ pill or Tab key.
@@ -158,6 +315,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           lastAccessed: (tab as chrome.tabs.Tab & { lastAccessed?: number }).lastAccessed || 0,
           audible: tab.audible || false,
           muted: tab.mutedInfo?.muted || false,
+          discarded: tab.discarded || false,
         }));
 
       setTabs(normalized);
@@ -366,8 +524,8 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   // a dwell period so arrow-key mashing doesn't fire an IndexedDB read per
   // keypress; the previously-displayed thumbnail stays put (never blank)
   // while the user rests on a new row and the fetch resolves.
-  const [thumb, setThumb] = useState<{ url: string; capturedAt: number } | null>(null);
-  const thumbRef = useRef<{ url: string; capturedAt: number } | null>(null);
+  const [thumb, setThumb] = useState<{ url: string; capturedAt: number; width?: number } | null>(null);
+  const thumbRef = useRef<{ url: string; capturedAt: number; width?: number } | null>(null);
   const thumbRequestRef = useRef(0);
   useEffect(() => {
     thumbRef.current = thumb;
@@ -376,6 +534,35 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     return () => {
       if (thumbRef.current) URL.revokeObjectURL(thumbRef.current.url);
     };
+  }, []);
+
+  // Neighbor-prefetch cache (perceived fluidity): holds raw TabThumbnail
+  // records (never object URLs) keyed by urlHash, small LRU. Only the
+  // currently-displayed thumbnail ever gets a live object URL — created on
+  // demand and revoked exactly where `thumb` is replaced/unmounted above —
+  // so eviction here never has to worry about revoking anything.
+  const thumbCacheRef = useRef<Map<string, TabThumbnail>>(new Map());
+  const thumbInFlightRef = useRef<Set<string>>(new Set());
+
+  const cacheGetThumb = useCallback((urlHash: string): TabThumbnail | undefined => {
+    const cache = thumbCacheRef.current;
+    const rec = cache.get(urlHash);
+    if (rec) {
+      // Bump recency for LRU.
+      cache.delete(urlHash);
+      cache.set(urlHash, rec);
+    }
+    return rec;
+  }, []);
+
+  const cacheSetThumb = useCallback((urlHash: string, rec: TabThumbnail) => {
+    const cache = thumbCacheRef.current;
+    cache.delete(urlHash);
+    cache.set(urlHash, rec);
+    if (cache.size > THUMB_CACHE_MAX) {
+      const oldestKey = cache.keys().next().value;
+      if (oldestKey !== undefined) cache.delete(oldestKey);
+    }
   }, []);
 
   const activeUrl = activeTabItem?.url;
@@ -392,21 +579,129 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
       return;
     }
 
+    const urlHash = hashUrl(activeUrl);
     const requestId = ++thumbRequestRef.current;
+
+    const applyRecord = (record: TabThumbnail | undefined) => {
+      if (thumbRequestRef.current !== requestId) return; // superseded by a newer selection
+      setThumb((prev) => {
+        if (prev) URL.revokeObjectURL(prev.url);
+        return record
+          ? { url: URL.createObjectURL(record.blob), capturedAt: record.capturedAt, width: record.width }
+          : null;
+      });
+    };
+
+    // Consult the neighbor-prefetch cache before ever hitting IndexedDB —
+    // this is the fast path when the user arrows onto a row we already
+    // warmed. Cache hits skip the debounce too, since there's no I/O to wait
+    // out; only a real DB read needs the dwell period.
+    const cached = cacheGetThumb(urlHash);
+    if (cached) {
+      applyRecord(cached);
+      return;
+    }
+
     const timer = setTimeout(() => {
-      getThumbnail(hashUrl(activeUrl))
+      getThumbnail(urlHash)
         .then((record) => {
-          if (thumbRequestRef.current !== requestId) return; // superseded by a newer selection
-          setThumb((prev) => {
-            if (prev) URL.revokeObjectURL(prev.url);
-            return record ? { url: URL.createObjectURL(record.blob), capturedAt: record.capturedAt } : null;
-          });
+          if (record) cacheSetThumb(urlHash, record);
+          applyRecord(record);
         })
         .catch(() => {});
     }, THUMB_DEBOUNCE_MS);
 
     return () => clearTimeout(timer);
-  }, [activeUrl]);
+  }, [activeUrl, cacheGetThumb, cacheSetThumb]);
+
+  // Neighbor prefetch: warm the thumbnail cache for the rows just off-screen
+  // around the current selection so arrowing onto them is instant. Capped at
+  // THUMB_PREFETCH_CONCURRENCY in-flight reads via a simple Set; skips
+  // anything already cached or already being fetched.
+  useEffect(() => {
+    if (displayList.length === 0) return;
+    const offsets: number[] = [];
+    for (let d = 1; d <= PREFETCH_RADIUS; d++) offsets.push(-d, d);
+    const queue: string[] = [];
+    for (const offset of offsets) {
+      const neighbor = displayList[activeIndex + offset];
+      if (!neighbor) continue;
+      const neighborHash = hashUrl(neighbor.url);
+      if (thumbCacheRef.current.has(neighborHash) || thumbInFlightRef.current.has(neighborHash)) continue;
+      queue.push(neighborHash);
+    }
+    if (queue.length === 0) return;
+
+    let cancelled = false;
+    const runNext = () => {
+      if (cancelled) return;
+      if (thumbInFlightRef.current.size >= THUMB_PREFETCH_CONCURRENCY) return;
+      const nextHash = queue.shift();
+      if (!nextHash) return;
+      thumbInFlightRef.current.add(nextHash);
+      getThumbnail(nextHash)
+        .then((record) => {
+          if (record) cacheSetThumb(nextHash, record);
+        })
+        .catch(() => {})
+        .finally(() => {
+          thumbInFlightRef.current.delete(nextHash);
+          runNext();
+        });
+    };
+    for (let i = 0; i < THUMB_PREFETCH_CONCURRENCY; i++) runNext();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [displayList, activeIndex, cacheSetThumb]);
+
+  // Hero box width, measured live — used to decide whether a Tier-2
+  // thumbnail would need to be upscaled to fill the pane (see THUMB_UPSCALE_MAX).
+  const heroRef = useRef<HTMLDivElement>(null);
+  const [heroBoxWidth, setHeroBoxWidth] = useState(600);
+  useEffect(() => {
+    const el = heroRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (width) setHeroBoxWidth(width);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // og:image demotions persist across re-selection (keyed by urlHash) so a
+  // rejected og:image doesn't flash back in if the user tabs away and back.
+  const [ogDemoted, setOgDemoted] = useState<Set<string>>(new Set());
+  const activeUrlHash = activeTabItem ? hashUrl(activeTabItem.url) : null;
+  const ogRejected = activeUrlHash !== null && ogDemoted.has(activeUrlHash);
+  const ogImage = !ogRejected ? activeCard?.ogImage : undefined;
+
+  const heroTier: "thumb-cover" | "thumb-contain" | "og-cover" | "typographic" = thumb
+    ? thumb.width !== undefined && thumb.width < heroBoxWidth * THUMB_UPSCALE_MAX
+      ? "thumb-contain"
+      : "thumb-cover"
+    : ogImage
+      ? "og-cover"
+      : "typographic";
+
+  const handleOgImageLoad = useCallback(
+    (event: SyntheticEvent<HTMLImageElement>) => {
+      if (!activeUrlHash) return;
+      const img = event.currentTarget;
+      const ratio = img.naturalHeight ? img.naturalWidth / img.naturalHeight : 1;
+      const shouldDemote = img.naturalWidth < OG_MIN_WIDTH_PX || (ratio >= OG_SQUARE_LO && ratio <= OG_SQUARE_HI);
+      if (!shouldDemote) return;
+      setOgDemoted((prev) => {
+        if (prev.has(activeUrlHash)) return prev;
+        const next = new Set(prev);
+        next.add(activeUrlHash);
+        return next;
+      });
+    },
+    [activeUrlHash]
+  );
 
   const focusInputAtEnd = useCallback(() => {
     const input = inputRef.current;
@@ -729,6 +1024,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                     aria-selected={active}
                     ref={registerItem(index)}
                     onMouseEnter={() => setActiveIndex(index)}
+                    style={audioList.length > CONTENT_VISIBILITY_THRESHOLD ? { contentVisibility: "auto", containIntrinsicSize: ROW_CONTAIN_SIZE } : undefined}
                     className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 transition-colors duration-100 ${
                       active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]"
                     } ${tab.muted ? "opacity-60" : ""}`}
@@ -751,7 +1047,9 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                       </span>
                       <AudioEq playing={playing} />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">{tab.title}</span>
+                        <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">
+                          {highlightTitle(tab.title, query, active)}
+                        </span>
                         <span className={`block truncate text-[11px] ${active ? "text-white/70" : "text-white/45"}`}>
                           {hint ?? domainOf(tab.url)}
                         </span>
@@ -828,9 +1126,17 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                         type="button"
                         onMouseEnter={() => setActiveIndex(index)}
                         onClick={() => void activate(tab)}
+                        style={
+                          orderedTabs.length > CONTENT_VISIBILITY_THRESHOLD
+                            ? {
+                                contentVisibility: "auto",
+                                containIntrinsicSize: isDuplicateTitle ? ROW_CONTAIN_SIZE_DUPLICATE : ROW_CONTAIN_SIZE,
+                              }
+                            : undefined
+                        }
                         className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${
                           active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]"
-                        }`}
+                        } ${tab.discarded ? "opacity-[0.55]" : ""}`}
                       >
                         <span
                           className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${
@@ -844,13 +1150,16 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                           )}
                         </span>
                         <span className="min-w-0 flex-1">
-                          <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">{tab.title}</span>
+                          <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">
+                            {highlightTitle(tab.title, query, active)}
+                          </span>
                           {isDuplicateTitle && (
                             <span className={`block truncate text-[11px] ${active ? "text-white/70" : "text-white/45"}`}>
                               {domainOf(tab.url)}
                             </span>
                           )}
                         </span>
+                        <RowGlyphs tab={tab} currentWindowId={currentWindowId} active={active} />
                       </button>
                     </div>
                   );
@@ -873,45 +1182,69 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col">
-            {/* Hero (Tier 2 screenshot → Tier 1 og:image → Tier 0 favicon).
-                Takes 60% of the pane height; the description below gets 40%.
-                Keyed by tab + resolved tier so an upgrade or a selection
-                change cross-fades in rather than hard-swapping. */}
+            {/* Hero (Tier 2 screenshot → Tier 1 og:image → Tier 0.5 typographic
+                card). Fixed 16:10 aspect ratio (never flex-grown) so it never
+                needs to upscale a thumbnail to fill unpredictable flex space;
+                the metadata pane below takes whatever height remains and
+                scrolls. Keyed by tab + resolved tier so an upgrade, a
+                demotion, or a selection change all cross-fade in rather than
+                hard-swapping. */}
             <div
-              className="relative min-h-0 flex-[3] overflow-hidden border-b border-white/[0.07]"
-              style={{ background: activeCard?.themeColor ? `${activeCard.themeColor}22` : "rgba(255,255,255,0.03)" }}
+              ref={heroRef}
+              className="relative overflow-hidden border-b border-white/[0.07]"
+              style={{
+                aspectRatio: HERO_ASPECT,
+                background:
+                  heroTier === "thumb-contain"
+                    ? `${activeCard?.themeColor ?? "#1c1c1e"}22`
+                    : "rgba(255,255,255,0.03)",
+              }}
             >
-              <div
-                key={`${activeTabItem.id}:${thumb?.url ?? activeCard?.ogImage ?? "icon"}`}
-                className="tk-hero-fade h-full w-full"
-              >
-                {thumb ? (
-                  <img src={thumb.url} alt="" className="h-full w-full object-cover object-top" />
-                ) : activeCard?.ogImage ? (
-                  <img src={activeCard.ogImage} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
-                ) : (
-                  <div className="grid h-full place-items-center">
-                    <span className="grid h-12 w-12 place-items-center overflow-hidden rounded-xl bg-white/8">
-                      {activeTabItem.favIconUrl ? (
-                        <img src={activeTabItem.favIconUrl} alt="" className="h-7 w-7 object-cover" referrerPolicy="no-referrer" />
-                      ) : (
-                        <Globe className="h-6 w-6 text-white/60" />
-                      )}
-                    </span>
+              <div key={`${activeTabItem.id}:${heroTier}`} className="tk-hero-fade h-full w-full">
+                {heroTier === "thumb-cover" && thumb && (
+                  <>
+                    <img src={thumb.url} alt="" className="h-full w-full object-cover object-top" />
+                    <HeroTopScrim />
+                    <FreshnessChip capturedAt={thumb.capturedAt} now={now} />
+                  </>
+                )}
+                {heroTier === "thumb-contain" && thumb && (
+                  <div className="relative h-full w-full">
+                    <img
+                      src={thumb.url}
+                      alt=""
+                      className="absolute inset-0 h-full w-full scale-110 object-cover opacity-40 blur-2xl"
+                    />
+                    <div className="relative grid h-full w-full place-items-center">
+                      <img src={thumb.url} alt="" className="max-h-full max-w-full object-contain" />
+                    </div>
+                    <HeroTopScrim />
+                    <FreshnessChip capturedAt={thumb.capturedAt} now={now} />
                   </div>
                 )}
+                {heroTier === "og-cover" && ogImage && (
+                  <>
+                    <img
+                      src={ogImage}
+                      alt=""
+                      className="h-full w-full object-cover object-center"
+                      referrerPolicy="no-referrer"
+                      onLoad={handleOgImageLoad}
+                    />
+                    <HeroTopScrim />
+                  </>
+                )}
+                {heroTier === "typographic" && <HeroTypographicCard tab={activeTabItem} card={activeCard} />}
               </div>
             </div>
 
-            <div className="min-h-0 flex-[2] overflow-auto px-6 py-5">
+            <div className="min-h-0 flex-1 overflow-auto px-6 py-5">
               <div className="mb-1 flex items-center gap-2 text-[11px] text-white/45">
                 <span className="truncate">{activeCard?.siteName || domainOf(activeTabItem.url)}</span>
-                {(thumb?.capturedAt ?? activeCard?.capturedAt) && (
+                {heroTier !== "thumb-cover" && heroTier !== "thumb-contain" && activeCard?.capturedAt && (
                   <>
                     <span className="text-white/25">·</span>
-                    <span className="shrink-0">
-                      captured {relativeTime(thumb?.capturedAt ?? activeCard!.capturedAt, now)}
-                    </span>
+                    <span className="shrink-0">captured {relativeTime(activeCard.capturedAt, now)}</span>
                   </>
                 )}
               </div>

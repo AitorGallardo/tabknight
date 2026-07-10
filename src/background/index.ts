@@ -5,8 +5,9 @@
 //   on restricted pages where a content script can't be injected.
 
 import { updateBadgeCount } from "../popup/lib/chrome-api";
-import { putCard, pruneCards } from "../popup/lib/preview/db";
-import { captureActiveTabThumbnail } from "../popup/lib/preview/thumbnail";
+import { getThumbnail, putCard, pruneCards } from "../popup/lib/preview/db";
+import { hashUrl } from "../popup/lib/preview/hash";
+import { captureActiveTabThumbnail, isCapturableUrl } from "../popup/lib/preview/thumbnail";
 import type {
   AudibleStateChangedMessage,
   ContentCard,
@@ -153,17 +154,24 @@ async function openStandalonePreview(sourceTab?: chrome.tabs.Tab): Promise<void>
 // respect Chrome's captureVisibleTab rate limit.
 
 const MIN_CAPTURE_INTERVAL = 3000;
+// Opening the overlay bypasses the per-tab throttle, but only when the stored
+// thumbnail is this stale — repeatedly toggling Cmd+K should not spam captures.
+const OVERLAY_OPEN_STALE_THRESHOLD = 30000;
 const lastCaptureAt = new Map<number, number>();
 // captureVisibleTab captures the active tab of a given window, so mutual
 // exclusion only needs to be per-window — a global lock would starve every
 // window but the first that requests a capture at the same time.
 const captureInFlightWindows = new Set<number>();
 
-async function maybeCapture(tab: chrome.tabs.Tab | undefined): Promise<void> {
+async function maybeCapture(
+  tab: chrome.tabs.Tab | undefined,
+  opts?: { bypassThrottle?: boolean }
+): Promise<void> {
   if (!tab?.id || !tab.active || tab.windowId === undefined) return;
 
   const now = Date.now();
-  if (now - (lastCaptureAt.get(tab.id) ?? 0) < MIN_CAPTURE_INTERVAL) return;
+  const throttled = now - (lastCaptureAt.get(tab.id) ?? 0) < MIN_CAPTURE_INTERVAL;
+  if (throttled && !opts?.bypassThrottle) return;
   if (captureInFlightWindows.has(tab.windowId)) return;
 
   lastCaptureAt.set(tab.id, now);
@@ -173,6 +181,24 @@ async function maybeCapture(tab: chrome.tabs.Tab | undefined): Promise<void> {
   } finally {
     captureInFlightWindows.delete(tab.windowId);
   }
+}
+
+// The active tab is visible right as the overlay opens — freshen its
+// thumbnail so the "previous tab" the user is most likely to want next time
+// reflects what they just saw, not a stale capture from minutes ago.
+async function maybeCaptureOnOverlayOpen(tab: chrome.tabs.Tab | undefined): Promise<void> {
+  const url = tab?.url;
+  if (!isCapturableUrl(url)) return;
+
+  let bypassThrottle = true;
+  try {
+    const existing = await getThumbnail(hashUrl(url));
+    bypassThrottle = !existing || Date.now() - existing.capturedAt > OVERLAY_OPEN_STALE_THRESHOLD;
+  } catch {
+    // DB read failed — default to allowing the capture.
+  }
+
+  await maybeCapture(tab, { bypassThrottle });
 }
 
 // Captures are driven by the content script (PREVIEW_REQUEST_CAPTURE), which
@@ -223,9 +249,18 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 
 // Update when window focus changes
 chrome.windows.onFocusChanged.addListener((windowId) => {
-  if (windowId !== chrome.windows.WINDOW_ID_NONE) {
-    updateBadgeCount();
-  }
+  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+
+  updateBadgeCount();
+
+  // The newly focused window's active tab is visible on screen — opportunistically
+  // refresh its thumbnail so multi-window usage stays fresh at zero user-visible cost.
+  void chrome.tabs
+    .query({ active: true, windowId })
+    .then(([tab]) => maybeCapture(tab))
+    .catch(() => {
+      // Best-effort — window may have closed between the event and the query.
+    });
 });
 
 // First-run discoverability: once the user actually uses the shortcut, the
@@ -246,6 +281,8 @@ chrome.commands.onCommand.addListener(async (command) => {
     active: true,
     currentWindow: true,
   });
+
+  void maybeCaptureOnOverlayOpen(activeTab);
 
   if (activeTab?.id !== undefined) {
     const opened = await ensureAndTogglePreview(activeTab.id);

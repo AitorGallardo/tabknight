@@ -35,10 +35,11 @@ export interface ContentCard {
 /** Pixel snapshot of a tab (Phase 2 — store reserved now). */
 export interface TabThumbnail {
   urlHash: string;
-  /** Downscaled JPEG/WebP image. */
+  /** Downscaled WebP image, encoded from a JPEG capture. */
   blob: Blob;
-  width: number;
-  height: number;
+  /** Optional: absent on thumbnails written before this field existed. */
+  width?: number;
+  height?: number;
   capturedAt: number;
 }
 
