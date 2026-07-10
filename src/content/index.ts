@@ -73,13 +73,63 @@ window.addEventListener(
 // and ask the background to fall back to the standalone tab.
 
 const PREVIEW_HOST_ID = "tabknight-preview-host";
+const PREVIEW_MOTION_MS = 140;
+const PREVIEW_MOTION_BACKSTOP_MS = 200;
+const PREVIEW_FALLBACK_BACKSTOP_MS = 4000;
+
 let previewHost: HTMLDivElement | null = null;
 let previewFallbackTimer: number | undefined;
+let previewReady = false;
+let previewClosing = false;
+// Set as soon as the user (or a "close" postMessage) dismisses the overlay,
+// so a frame.onerror firing during the close animation can't mistake the
+// dismissal for a load failure and pop an unwanted standalone tab.
+let previewDismissed = false;
+
+function prefersReducedMotion(): boolean {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
 
 function closePreviewOverlay(): void {
+  previewDismissed = true;
+  if (!previewHost || previewClosing) return;
+  const host = previewHost;
+  const backdrop = host.shadowRoot?.querySelector<HTMLElement>("[data-role='backdrop']");
   window.clearTimeout(previewFallbackTimer);
-  previewHost?.remove();
-  previewHost = null;
+
+  const finish = () => {
+    host.remove();
+    if (previewHost === host) previewHost = null;
+    previewClosing = false;
+  };
+
+  if (!backdrop || prefersReducedMotion()) {
+    finish();
+    return;
+  }
+
+  previewClosing = true;
+  backdrop.classList.remove("tkp-visible");
+
+  let settled = false;
+  const settle = () => {
+    if (settled) return;
+    settled = true;
+    backdrop.removeEventListener("transitionend", onTransitionEnd);
+    finish();
+  };
+  const onTransitionEnd = (event: TransitionEvent) => {
+    if (event.target === backdrop && event.propertyName === "opacity") settle();
+  };
+  backdrop.addEventListener("transitionend", onTransitionEnd);
+  window.setTimeout(settle, PREVIEW_MOTION_BACKSTOP_MS);
+}
+
+function triggerPreviewFallback(): void {
+  if (previewReady || previewDismissed) return;
+  window.clearTimeout(previewFallbackTimer);
+  closePreviewOverlay();
+  void chrome.runtime.sendMessage({ type: "PREVIEW_FALLBACK_STANDALONE" }).catch(() => {});
 }
 
 function openPreviewOverlay(): void {
@@ -93,6 +143,8 @@ function openPreviewOverlay(): void {
   const shadow = host.attachShadow({ mode: "open" });
   document.documentElement.appendChild(host);
   previewHost = host;
+  previewReady = false;
+  previewDismissed = false;
 
   const src = chrome.runtime.getURL("popup/index.html?view=preview&overlay=1");
 
@@ -105,17 +157,55 @@ function openPreviewOverlay(): void {
         background: rgba(6, 7, 10, 0.34);
         backdrop-filter: blur(7px) saturate(105%);
         -webkit-backdrop-filter: blur(7px) saturate(105%);
+        opacity: 0;
+        transition: opacity ${PREVIEW_MOTION_MS}ms cubic-bezier(0.2, 0.8, 0.2, 1);
       }
+      .tkp-backdrop.tkp-visible { opacity: 1; }
       .tkp-panel {
+        position: relative;
         width: min(1040px, 92vw); height: min(640px, 86vh);
         border-radius: 18px; overflow: hidden;
-        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
-        background: transparent;
+        background: linear-gradient(180deg, rgba(28, 28, 30, 0.86), rgba(20, 20, 22, 0.84));
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        box-shadow: 0 32px 90px rgba(0, 0, 0, 0.55);
+        backdrop-filter: blur(30px);
+        -webkit-backdrop-filter: blur(30px);
+        transform: scale(0.98);
+        transition: transform ${PREVIEW_MOTION_MS}ms cubic-bezier(0.2, 0.8, 0.2, 1);
       }
-      .tkp-frame { width: 100%; height: 100%; border: 0; background: transparent; }
+      .tkp-backdrop.tkp-visible .tkp-panel { transform: scale(1); }
+      .tkp-skeleton {
+        position: absolute; inset: 0; padding: 28px;
+        display: flex; flex-direction: column; gap: 12px;
+        pointer-events: none;
+        transition: opacity 160ms ease;
+      }
+      .tkp-skeleton.tkp-hidden { opacity: 0; }
+      .tkp-skel-row {
+        height: 14px; border-radius: 7px;
+        background: linear-gradient(90deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.05));
+        background-size: 200% 100%;
+        animation: tkp-shimmer 1.6s ease-in-out infinite;
+      }
+      .tkp-skel-row--a { width: 32%; }
+      .tkp-skel-row--b { width: 68%; }
+      .tkp-skel-row--c { width: 52%; }
+      @keyframes tkp-shimmer {
+        0% { background-position: 200% 0; }
+        100% { background-position: -200% 0; }
+      }
+      .tkp-frame { width: 100%; height: 100%; border: 0; background: transparent; position: relative; }
+      @media (prefers-reduced-motion: reduce) {
+        .tkp-backdrop, .tkp-panel, .tkp-skeleton, .tkp-skel-row { transition: none !important; animation: none !important; }
+      }
     </style>
     <div class="tkp-backdrop" data-role="backdrop">
       <div class="tkp-panel">
+        <div class="tkp-skeleton" data-role="skeleton">
+          <div class="tkp-skel-row tkp-skel-row--a"></div>
+          <div class="tkp-skel-row tkp-skel-row--b"></div>
+          <div class="tkp-skel-row tkp-skel-row--c"></div>
+        </div>
         <iframe class="tkp-frame" src="${src}" referrerpolicy="no-referrer"></iframe>
       </div>
     </div>
@@ -128,19 +218,32 @@ function openPreviewOverlay(): void {
 
   const frame = shadow.querySelector<HTMLIFrameElement>(".tkp-frame");
   frame?.addEventListener("load", () => frame.contentWindow?.focus());
+  if (frame) frame.onerror = () => triggerPreviewFallback();
 
-  // If the iframe never signals "ready" (e.g. CSP blocked it), degrade to a tab.
-  previewFallbackTimer = window.setTimeout(() => {
-    closePreviewOverlay();
-    void chrome.runtime.sendMessage({ type: "PREVIEW_FALLBACK_STANDALONE" }).catch(() => {});
-  }, 1800);
+  if (backdrop) {
+    if (prefersReducedMotion()) {
+      backdrop.classList.add("tkp-visible");
+    } else {
+      requestAnimationFrame(() => requestAnimationFrame(() => backdrop.classList.add("tkp-visible")));
+    }
+  }
+
+  // If the iframe never signals "ready" (e.g. CSP blocked it, or a real load
+  // failure), degrade to a tab. A loaded-but-slow React app keeps waiting.
+  previewFallbackTimer = window.setTimeout(triggerPreviewFallback, PREVIEW_FALLBACK_BACKSTOP_MS);
 }
 
 // Messages from the React app inside the iframe (cross-frame postMessage).
 window.addEventListener("message", (event) => {
   const data = event.data as { source?: string; type?: string } | undefined;
   if (data?.source !== "tabknight-preview") return;
-  if (data.type === "ready") window.clearTimeout(previewFallbackTimer);
+  if (data.type === "ready") {
+    previewReady = true;
+    window.clearTimeout(previewFallbackTimer);
+    previewHost?.shadowRoot
+      ?.querySelector<HTMLElement>("[data-role='skeleton']")
+      ?.classList.add("tkp-hidden");
+  }
   if (data.type === "close") closePreviewOverlay();
 });
 

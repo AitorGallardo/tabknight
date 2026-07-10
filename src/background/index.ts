@@ -34,11 +34,37 @@ async function injectContentScriptIntoOpenTabs(): Promise<void> {
   );
 }
 
+// Chrome doesn't expose a typed error for "no listener on the other end" — it
+// rejects sendMessage with one of these messages. Only these mean the content
+// script isn't there; anything else (e.g. the listener itself threw) should
+// not trigger a re-injection, or we'd end up with two overlay hosts on the
+// page.
+function isNoReceiverError(err: unknown): boolean {
+  const text = err instanceof Error ? err.message : String(err);
+  const lower = text.toLowerCase();
+  return (
+    lower.includes("receiving end does not exist") ||
+    lower.includes("could not establish connection")
+  );
+}
+
+// Chrome also rejects sendMessage with this when the listener was present and
+// ran (e.g. it called openPreviewOverlay synchronously) but the tab/frame
+// navigated or the port otherwise closed before the response made it back.
+// Unlike isNoReceiverError, this means the content script IS there — treat it
+// as success rather than falling back to a redundant standalone tab.
+function isPortClosedError(err: unknown): boolean {
+  const text = err instanceof Error ? err.message : String(err);
+  return text.toLowerCase().includes("the message port closed before a response was received");
+}
+
 async function ensureAndTogglePreview(tabId: number): Promise<boolean> {
   try {
     await chrome.tabs.sendMessage(tabId, { type: "PREVIEW_OVERLAY_TOGGLE" });
     return true;
-  } catch {
+  } catch (error) {
+    if (isPortClosedError(error)) return true;
+    if (!isNoReceiverError(error)) return false;
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
@@ -62,17 +88,23 @@ async function forwardMediaControl(
   const message = { type: "MEDIA_CONTROL", action };
   try {
     return await chrome.tabs.sendMessage(tabId, message);
-  } catch {
+  } catch (error) {
+    if (!isNoReceiverError(error)) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : "Unknown runtime error",
+      };
+    }
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
         files: ["content/index.js"],
       });
       return await chrome.tabs.sendMessage(tabId, message);
-    } catch (error) {
+    } catch (retryError) {
       return {
         ok: false,
-        error: error instanceof Error ? error.message : "Unknown runtime error",
+        error: retryError instanceof Error ? retryError.message : "Unknown runtime error",
       };
     }
   }
@@ -122,21 +154,24 @@ async function openStandalonePreview(sourceTab?: chrome.tabs.Tab): Promise<void>
 
 const MIN_CAPTURE_INTERVAL = 3000;
 const lastCaptureAt = new Map<number, number>();
-let captureInFlight = false;
+// captureVisibleTab captures the active tab of a given window, so mutual
+// exclusion only needs to be per-window — a global lock would starve every
+// window but the first that requests a capture at the same time.
+const captureInFlightWindows = new Set<number>();
 
 async function maybeCapture(tab: chrome.tabs.Tab | undefined): Promise<void> {
-  if (!tab?.id || !tab.active) return;
+  if (!tab?.id || !tab.active || tab.windowId === undefined) return;
 
   const now = Date.now();
   if (now - (lastCaptureAt.get(tab.id) ?? 0) < MIN_CAPTURE_INTERVAL) return;
-  if (captureInFlight) return;
+  if (captureInFlightWindows.has(tab.windowId)) return;
 
   lastCaptureAt.set(tab.id, now);
-  captureInFlight = true;
+  captureInFlightWindows.add(tab.windowId);
   try {
     await captureActiveTabThumbnail(tab);
   } finally {
-    captureInFlight = false;
+    captureInFlightWindows.delete(tab.windowId);
   }
 }
 

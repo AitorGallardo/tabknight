@@ -21,6 +21,13 @@ function postToParent(type: "ready" | "close"): void {
   }
 }
 
+interface PreviewSessionState {
+  mode: "tabs" | "audio";
+  selectedTabId: number | null;
+}
+
+const PREVIEW_SESSION_KEY = "previewSession";
+
 interface NavigatorTab {
   id: number;
   windowId: number;
@@ -43,7 +50,7 @@ interface PlaybackState {
 }
 
 const PAUSE_DEBOUNCE_MS = 800;
-const AUTOPLAY_HINT_MS = 2500;
+const HINT_MS = 2500;
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -116,9 +123,18 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   // is open, its row stays until the overlay closes (it just flips to paused).
   const [audioTabIds, setAudioTabIds] = useState<Set<number>>(new Set());
   const [playback, setPlayback] = useState<Map<number, PlaybackState>>(new Map());
-  const [autoplayHint, setAutoplayHint] = useState<Record<number, boolean>>({});
+  const [rowHints, setRowHints] = useState<Record<number, string>>({});
   const pauseTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
   const hintTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+  // Session-restored { mode, selectedTabId } read once on mount; applied after
+  // tabs finish loading. undefined = read still pending, null = nothing saved.
+  // Kept as state (not a ref) so the restore effect re-runs if the async read
+  // resolves after tabs have already loaded.
+  const [savedSession, setSavedSession] = useState<PreviewSessionState | null | undefined>(undefined);
+  const restoredSelectionRef = useRef(false);
+  // Gates the write-through effect until the one-time restore has applied, so
+  // it can't persist a stale pre-restore selection in the same commit.
+  const [persistReady, setPersistReady] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -165,6 +181,20 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     };
 
     void load();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const result = await chrome.storage.session.get(PREVIEW_SESSION_KEY);
+        const saved = (result[PREVIEW_SESSION_KEY] as PreviewSessionState | undefined) ?? null;
+        setSavedSession(saved);
+        if (saved?.mode === "audio") setMode("audio");
+      } catch {
+        // No session storage access — start fresh.
+        setSavedSession(null);
+      }
+    })();
   }, []);
 
   useEffect(() => {
@@ -307,6 +337,49 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   const activeTabItem = displayList[activeIndex];
   const activeCard = activeTabItem ? cards.get(hashUrl(activeTabItem.url)) : undefined;
 
+  // One-time restore of the remembered selection once tabs are loaded. Falls
+  // back "audio" -> "tabs" if the restored audio list would be empty, and
+  // falls back to the existing default ranking if the remembered tab is gone.
+  useEffect(() => {
+    if (loading || savedSession === undefined || restoredSelectionRef.current) return;
+    restoredSelectionRef.current = true;
+    const saved = savedSession;
+    if (!saved) {
+      setPersistReady(true);
+      return;
+    }
+
+    let effectiveMode = saved.mode;
+    if (effectiveMode === "audio" && !tabs.some((tab) => tab.audible || tab.muted)) {
+      effectiveMode = "tabs";
+      setMode("tabs");
+    }
+
+    if (saved.selectedTabId !== null) {
+      if (effectiveMode === "audio") {
+        const list = tabs
+          .filter((tab) => tab.audible || tab.muted)
+          .sort((a, b) => b.lastAccessed - a.lastAccessed);
+        const idx = list.findIndex((tab) => tab.id === saved.selectedTabId);
+        if (idx >= 0) setActiveIndex(idx);
+      } else {
+        const idx = orderedTabs.findIndex((tab) => tab.id === saved.selectedTabId);
+        if (idx >= 0) setActiveIndex(idx);
+      }
+    }
+    setPersistReady(true);
+  }, [loading, tabs, orderedTabs, savedSession]);
+
+  // Write-through: persist { mode, selectedTabId } so the next Cmd+K open
+  // (fresh iframe) can restore where the user left off. Gated until the
+  // one-time restore above has applied, so it never overwrites the saved
+  // session with a stale pre-restore selection.
+  useEffect(() => {
+    if (loading || !persistReady) return;
+    const selectedTabId = activeTabItem?.id ?? null;
+    chrome.storage.session.set({ [PREVIEW_SESSION_KEY]: { mode, selectedTabId } }).catch(() => {});
+  }, [mode, activeTabItem?.id, loading, persistReady]);
+
   // Lazily load the pixel thumbnail for the focused tab (Tier 2). We fetch one
   // blob at a time and revoke its object URL when the selection changes.
   const [thumb, setThumb] = useState<{ url: string; capturedAt: number } | null>(null);
@@ -391,52 +464,68 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     [dismiss]
   );
 
-  const sendPlayToggle = useCallback(async (tab: NavigatorTab) => {
-    try {
-      const result = (await chrome.runtime.sendMessage({
-        type: "MEDIA_CONTROL_REQUEST",
-        tabId: tab.id,
-        action: "toggle-play",
-      })) as MediaControlResult;
-
-      setPlayback((prev) => {
-        const existing = prev.get(tab.id);
-        const next = new Map(prev);
-        next.set(tab.id, { playing: result.playing ?? existing?.playing ?? false, mediaCount: result.mediaCount });
+  const showRowHint = useCallback((tabId: number, message: string) => {
+    setRowHints((prev) => ({ ...prev, [tabId]: message }));
+    const existingTimer = hintTimers.current.get(tabId);
+    if (existingTimer) clearTimeout(existingTimer);
+    const timer = setTimeout(() => {
+      hintTimers.current.delete(tabId);
+      setRowHints((prev) => {
+        if (!prev[tabId]) return prev;
+        const next = { ...prev };
+        delete next[tabId];
         return next;
       });
+    }, HINT_MS);
+    hintTimers.current.set(tabId, timer);
+  }, []);
 
-      if (result.error === "autoplay-blocked") {
-        setAnnouncement("Playback blocked — click the tab to resume");
-        setAutoplayHint((prev) => ({ ...prev, [tab.id]: true }));
-        const existingTimer = hintTimers.current.get(tab.id);
-        if (existingTimer) clearTimeout(existingTimer);
-        const timer = setTimeout(() => {
-          hintTimers.current.delete(tab.id);
-          setAutoplayHint((prev) => {
-            if (!prev[tab.id]) return prev;
-            const next = { ...prev };
-            delete next[tab.id];
-            return next;
-          });
-        }, AUTOPLAY_HINT_MS);
-        hintTimers.current.set(tab.id, timer);
-      } else {
-        setAnnouncement(result.playing ? `Playing ${tab.title}` : `Paused ${tab.title}`);
+  const sendPlayToggle = useCallback(
+    async (tab: NavigatorTab) => {
+      try {
+        const result = (await chrome.runtime.sendMessage({
+          type: "MEDIA_CONTROL_REQUEST",
+          tabId: tab.id,
+          action: "toggle-play",
+        })) as MediaControlResult;
+
+        setPlayback((prev) => {
+          const existing = prev.get(tab.id);
+          const next = new Map(prev);
+          next.set(tab.id, { playing: result.playing ?? existing?.playing ?? false, mediaCount: result.mediaCount });
+          return next;
+        });
+
+        if (result.error === "autoplay-blocked") {
+          setAnnouncement("Playback blocked — click the tab to resume");
+          showRowHint(tab.id, "click the tab to resume");
+        } else if (result.ok === false) {
+          setAnnouncement(`Couldn't reach ${tab.title}`);
+          showRowHint(tab.id, "couldn't reach tab");
+        } else {
+          setAnnouncement(result.playing ? `Playing ${tab.title}` : `Paused ${tab.title}`);
+        }
+      } catch {
+        setAnnouncement(`Couldn't reach ${tab.title}`);
+        showRowHint(tab.id, "couldn't reach tab");
       }
-    } catch {
-      // Tab gone, or no content-script listener — leave UI state as-is.
-    }
-  }, []);
+    },
+    [showRowHint]
+  );
 
-  const toggleMute = useCallback((tab: NavigatorTab) => {
-    const nextMuted = !tab.muted;
-    setTabs((prev) => prev.map((t) => (t.id === tab.id ? { ...t, muted: nextMuted } : t)));
-    setAnnouncement(nextMuted ? `Muted ${tab.title}` : `Unmuted ${tab.title}`);
-    void setTabMuted(tab.id, nextMuted).catch(() => {
-      setTabs((prev) => prev.map((t) => (t.id === tab.id ? { ...t, muted: !nextMuted } : t)));
-    });
-  }, []);
+  const toggleMute = useCallback(
+    (tab: NavigatorTab) => {
+      const nextMuted = !tab.muted;
+      setTabs((prev) => prev.map((t) => (t.id === tab.id ? { ...t, muted: nextMuted } : t)));
+      setAnnouncement(nextMuted ? `Muted ${tab.title}` : `Unmuted ${tab.title}`);
+      void setTabMuted(tab.id, nextMuted).catch(() => {
+        setTabs((prev) => prev.map((t) => (t.id === tab.id ? { ...t, muted: !nextMuted } : t)));
+        setAnnouncement(`Couldn't reach ${tab.title}`);
+        showRowHint(tab.id, "couldn't reach tab");
+      });
+    },
+    [showRowHint]
+  );
 
   const toggleSelectedPlay = useCallback(() => {
     const tab = audioList[activeIndex];
@@ -647,7 +736,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                 const state = playback.get(tab.id);
                 const playing = !!state?.playing && !tab.muted;
                 const uncontrollable = state?.mediaCount === 0;
-                const showHint = !!autoplayHint[tab.id];
+                const hint = rowHints[tab.id];
 
                 return (
                   <div
@@ -683,7 +772,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">{tab.title}</span>
                         <span className={`block truncate text-[11px] ${active ? "text-white/70" : "text-white/45"}`}>
-                          {showHint ? "click the tab to resume" : domainOf(tab.url)}
+                          {hint ?? domainOf(tab.url)}
                         </span>
                       </span>
                     </button>

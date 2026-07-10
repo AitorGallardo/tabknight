@@ -61,6 +61,16 @@
     line-height: 1.5;
   }
 
+  /* Tab-preview overlay (?overlay=1) only: keep the iframe document
+     transparent until React mounts, so the host page's blurred backdrop +
+     skeleton show through instead of a white pre-React paint. Set by
+     src/popup/index.tsx before render. Must not apply to the normal toolbar
+     popup or the standalone preview tab. */
+  html.tk-overlay,
+  html.tk-overlay body {
+    background: transparent;
+  }
+
   /* Scrollbar styling */
   ::-webkit-scrollbar {
     width: 6px;
