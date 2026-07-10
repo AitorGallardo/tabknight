@@ -7,7 +7,11 @@
 import { updateBadgeCount } from "../popup/lib/chrome-api";
 import { putCard, pruneCards } from "../popup/lib/preview/db";
 import { captureActiveTabThumbnail } from "../popup/lib/preview/thumbnail";
-import type { ContentCard } from "../popup/lib/preview/types";
+import type {
+  AudibleStateChangedMessage,
+  ContentCard,
+  MediaControlResult,
+} from "../popup/lib/preview/types";
 
 async function injectContentScriptIntoOpenTabs(): Promise<void> {
   const tabs = await chrome.tabs.query({
@@ -44,6 +48,32 @@ async function ensureAndTogglePreview(tabId: number): Promise<boolean> {
       return true;
     } catch {
       return false;
+    }
+  }
+}
+
+// Play/pause needs DOM access, so it's forwarded to the target tab's content
+// script, injecting it first if it hasn't run there yet (same retry pattern
+// as ensureAndTogglePreview).
+async function forwardMediaControl(
+  tabId: number,
+  action: string
+): Promise<MediaControlResult> {
+  const message = { type: "MEDIA_CONTROL", action };
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["content/index.js"],
+      });
+      return await chrome.tabs.sendMessage(tabId, message);
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : "Unknown runtime error",
+      };
     }
   }
 }
@@ -136,10 +166,23 @@ chrome.tabs.onRemoved.addListener(() => {
   updateBadgeCount();
 });
 
-chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   // Only update when URL changes
   if (changeInfo.url) {
     updateBadgeCount();
+  }
+
+  if (changeInfo.audible !== undefined || changeInfo.mutedInfo !== undefined) {
+    chrome.runtime
+      .sendMessage({
+        type: "AUDIBLE_STATE_CHANGED",
+        tabId,
+        audible: changeInfo.audible,
+        muted: changeInfo.mutedInfo?.muted,
+      } satisfies AudibleStateChangedMessage)
+      .catch(() => {
+        // No extension page is listening (overlay closed) — best-effort.
+      });
   }
 });
 
@@ -192,6 +235,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === "PREVIEW_FALLBACK_STANDALONE") {
       await openStandalonePreview(sender.tab);
       sendResponse({ ok: true });
+      return;
+    }
+
+    if (message?.type === "MEDIA_CONTROL_REQUEST") {
+      const result = await forwardMediaControl(message.tabId, message.action);
+      sendResponse(result);
       return;
     }
   };

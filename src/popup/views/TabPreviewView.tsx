@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Globe, Search, X } from "lucide-react";
-import { activateTab, getAllTabs } from "../lib/chrome-api";
+import { Globe, Music, Pause, Play, Search, Volume2, VolumeX, X } from "lucide-react";
+import { activateTab, getAllTabs, setTabMuted } from "../lib/chrome-api";
 import { getAllCards, getThumbnail } from "../lib/preview/db";
 import { hashUrl } from "../lib/preview/hash";
-import type { ContentCard } from "../lib/preview/types";
+import type { AudibleStateChangedMessage, ContentCard, MediaControlResult } from "../lib/preview/types";
+import { AudioEq } from "../components/AudioEq";
 
 interface TabPreviewViewProps {
   returnToTabId?: number | null;
@@ -30,7 +31,19 @@ interface NavigatorTab {
   active: boolean;
   index: number;
   lastAccessed: number;
+  audible?: boolean;
+  muted?: boolean;
 }
+
+/** Per-tab UI playback state for the Audio Playground (audio mode). */
+interface PlaybackState {
+  playing: boolean;
+  /** Media elements last reported by MEDIA_CONTROL_REQUEST; 0 = uncontrollable. */
+  mediaCount?: number;
+}
+
+const PAUSE_DEBOUNCE_MS = 800;
+const AUTOPLAY_HINT_MS = 2500;
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -90,8 +103,19 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   const [loading, setLoading] = useState(true);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const itemRefs = useRef<Array<HTMLElement | null>>([]);
   const now = useMemo(() => Date.now(), [tabs]);
+
+  // Audio Playground (Cmd+K "audio" mode): tabs mode is the default, primary
+  // surface; audio mode is entered via the ♪ pill or Tab key.
+  const [mode, setMode] = useState<"tabs" | "audio">("tabs");
+  // Session-sticky membership — once a tab is audible/muted while the overlay
+  // is open, its row stays until the overlay closes (it just flips to paused).
+  const [audioTabIds, setAudioTabIds] = useState<Set<number>>(new Set());
+  const [playback, setPlayback] = useState<Map<number, PlaybackState>>(new Map());
+  const [autoplayHint, setAutoplayHint] = useState<Record<number, boolean>>({});
+  const pauseTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+  const hintTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
 
   useEffect(() => {
     const load = async () => {
@@ -129,6 +153,8 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           active: tab.active || false,
           index: tab.index || 0,
           lastAccessed: (tab as chrome.tabs.Tab & { lastAccessed?: number }).lastAccessed || 0,
+          audible: tab.audible || false,
+          muted: tab.mutedInfo?.muted || false,
         }));
 
       setTabs(normalized);
@@ -143,6 +169,87 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     // Tell the host content script the iframe rendered (cancels its CSP fallback).
     if (overlay) postToParent("ready");
   }, [overlay]);
+
+  // Grow the sticky audio set / seed playback state whenever a tab becomes
+  // audible or muted (initial load, or the live-update effect below).
+  useEffect(() => {
+    let idsChanged = false;
+    const nextIds = new Set(audioTabIds);
+    let stateChanged = false;
+    const nextPlayback = new Map(playback);
+    for (const tab of tabs) {
+      if (!tab.audible && !tab.muted) continue;
+      if (!nextIds.has(tab.id)) {
+        nextIds.add(tab.id);
+        idsChanged = true;
+      }
+      if (!nextPlayback.has(tab.id)) {
+        nextPlayback.set(tab.id, { playing: !!tab.audible });
+        stateChanged = true;
+      }
+    }
+    if (idsChanged) setAudioTabIds(nextIds);
+    if (stateChanged) setPlayback(nextPlayback);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabs]);
+
+  // Live updates from the background: keep tab audible/muted flags fresh and
+  // debounce audible->false so transient flaps don't flicker a row to paused.
+  useEffect(() => {
+    const onMessage = (message: unknown) => {
+      const msg = message as Partial<AudibleStateChangedMessage>;
+      if (!msg || msg.type !== "AUDIBLE_STATE_CHANGED" || typeof msg.tabId !== "number") return;
+      const { tabId, audible, muted } = msg;
+
+      setTabs((prev) => {
+        const idx = prev.findIndex((t) => t.id === tabId);
+        if (idx === -1) return prev; // Unknown tab (e.g. created after load) — ignore.
+        const current = prev[idx];
+        const nextAudible = audible ?? current.audible;
+        const nextMuted = muted ?? current.muted;
+        if (current.audible === nextAudible && current.muted === nextMuted) return prev;
+        const next = prev.slice();
+        next[idx] = { ...current, audible: nextAudible, muted: nextMuted };
+        return next;
+      });
+
+      if (audible === true) {
+        const timer = pauseTimers.current.get(tabId);
+        if (timer) {
+          clearTimeout(timer);
+          pauseTimers.current.delete(tabId);
+        }
+        setPlayback((prev) => {
+          const existing = prev.get(tabId);
+          if (existing?.playing) return prev;
+          const next = new Map(prev);
+          next.set(tabId, { ...existing, playing: true });
+          return next;
+        });
+      } else if (audible === false && !pauseTimers.current.has(tabId)) {
+        const timer = setTimeout(() => {
+          pauseTimers.current.delete(tabId);
+          setPlayback((prev) => {
+            const existing = prev.get(tabId);
+            if (!existing || existing.playing === false) return prev;
+            const next = new Map(prev);
+            next.set(tabId, { ...existing, playing: false });
+            return next;
+          });
+        }, PAUSE_DEBOUNCE_MS);
+        pauseTimers.current.set(tabId, timer);
+      }
+    };
+
+    chrome.runtime.onMessage.addListener(onMessage);
+    return () => {
+      chrome.runtime.onMessage.removeListener(onMessage);
+      for (const timer of pauseTimers.current.values()) clearTimeout(timer);
+      pauseTimers.current.clear();
+      for (const timer of hintTimers.current.values()) clearTimeout(timer);
+      hintTimers.current.clear();
+    };
+  }, []);
 
   // Flat, ranked list of selectable tabs (keyboard navigation indexes into this).
   const orderedTabs = useMemo(() => {
@@ -163,17 +270,38 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
       .map(({ tab }) => tab);
   }, [tabs, query, currentWindowId]);
 
+  // Audio Playground rail — sticky-audio tabs, filtered by the same search query.
+  const audioList = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return tabs
+      .filter((tab) => audioTabIds.has(tab.id))
+      .filter((tab) => !q || tab.title.toLowerCase().includes(q) || tab.url.toLowerCase().includes(q))
+      .sort((a, b) => b.lastAccessed - a.lastAccessed);
+  }, [tabs, audioTabIds, query]);
+
+  const playingCount = useMemo(
+    () =>
+      tabs.reduce(
+        (count, tab) => count + (audioTabIds.has(tab.id) && !!playback.get(tab.id)?.playing && !tab.muted ? 1 : 0),
+        0
+      ),
+    [tabs, audioTabIds, playback]
+  );
+
+  // Keyboard navigation indexes into whichever list is on screen.
+  const displayList = mode === "audio" ? audioList : orderedTabs;
+
   useEffect(() => {
     setActiveIndex(0);
-  }, [query]);
+  }, [query, mode]);
 
   useEffect(() => {
-    if (activeIndex > orderedTabs.length - 1) {
-      setActiveIndex(Math.max(0, orderedTabs.length - 1));
+    if (activeIndex > displayList.length - 1) {
+      setActiveIndex(Math.max(0, displayList.length - 1));
     }
-  }, [orderedTabs.length, activeIndex]);
+  }, [displayList.length, activeIndex]);
 
-  const activeTabItem = orderedTabs[activeIndex];
+  const activeTabItem = displayList[activeIndex];
   const activeCard = activeTabItem ? cards.get(hashUrl(activeTabItem.url)) : undefined;
 
   // Lazily load the pixel thumbnail for the focused tab (Tier 2). We fetch one
@@ -219,7 +347,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     } else if (itemBottom > list.scrollTop + list.clientHeight - 8) {
       list.scrollTop = Math.min(list.scrollHeight - list.clientHeight, itemBottom - list.clientHeight + 8);
     }
-  }, [activeIndex, orderedTabs.length]);
+  }, [activeIndex, displayList.length]);
 
   const dismiss = useCallback(
     async (restoreOrigin: boolean) => {
@@ -260,6 +388,59 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     [dismiss]
   );
 
+  const sendPlayToggle = useCallback(async (tab: NavigatorTab) => {
+    try {
+      const result = (await chrome.runtime.sendMessage({
+        type: "MEDIA_CONTROL_REQUEST",
+        tabId: tab.id,
+        action: "toggle-play",
+      })) as MediaControlResult;
+
+      setPlayback((prev) => {
+        const existing = prev.get(tab.id);
+        const next = new Map(prev);
+        next.set(tab.id, { playing: result.playing ?? existing?.playing ?? false, mediaCount: result.mediaCount });
+        return next;
+      });
+
+      if (result.error === "autoplay-blocked") {
+        setAutoplayHint((prev) => ({ ...prev, [tab.id]: true }));
+        const existingTimer = hintTimers.current.get(tab.id);
+        if (existingTimer) clearTimeout(existingTimer);
+        const timer = setTimeout(() => {
+          hintTimers.current.delete(tab.id);
+          setAutoplayHint((prev) => {
+            if (!prev[tab.id]) return prev;
+            const next = { ...prev };
+            delete next[tab.id];
+            return next;
+          });
+        }, AUTOPLAY_HINT_MS);
+        hintTimers.current.set(tab.id, timer);
+      }
+    } catch {
+      // Tab gone, or no content-script listener — leave UI state as-is.
+    }
+  }, []);
+
+  const toggleMute = useCallback((tab: NavigatorTab) => {
+    const nextMuted = !tab.muted;
+    setTabs((prev) => prev.map((t) => (t.id === tab.id ? { ...t, muted: nextMuted } : t)));
+    void setTabMuted(tab.id, nextMuted).catch(() => {
+      setTabs((prev) => prev.map((t) => (t.id === tab.id ? { ...t, muted: !nextMuted } : t)));
+    });
+  }, []);
+
+  const toggleSelectedPlay = useCallback(() => {
+    const tab = audioList[activeIndex];
+    if (tab) void sendPlayToggle(tab);
+  }, [audioList, activeIndex, sendPlayToggle]);
+
+  const toggleSelectedMute = useCallback(() => {
+    const tab = audioList[activeIndex];
+    if (tab) toggleMute(tab);
+  }, [audioList, activeIndex, toggleMute]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -270,7 +451,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
 
       if (event.key === "ArrowDown") {
         event.preventDefault();
-        setActiveIndex((prev) => Math.min(prev + 1, Math.max(0, orderedTabs.length - 1)));
+        setActiveIndex((prev) => Math.min(prev + 1, Math.max(0, displayList.length - 1)));
         focusInputAtEnd();
       } else if (event.key === "ArrowUp") {
         event.preventDefault();
@@ -278,10 +459,19 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
         focusInputAtEnd();
       } else if (event.key === "Enter") {
         event.preventDefault();
-        void activate(orderedTabs[activeIndex]);
+        void activate(displayList[activeIndex]);
       } else if (event.key === "Escape") {
         event.preventDefault();
         void dismiss(true);
+      } else if (event.key === "Tab") {
+        event.preventDefault();
+        setMode((prev) => (prev === "tabs" ? "audio" : "tabs"));
+      } else if (mode === "audio" && query === "" && event.key === " ") {
+        event.preventDefault();
+        toggleSelectedPlay();
+      } else if (mode === "audio" && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+        event.preventDefault();
+        toggleSelectedMute();
       } else if (!targetIsInput && event.key === "Backspace") {
         event.preventDefault();
         setQuery((prev) => prev.slice(0, -1));
@@ -295,11 +485,47 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
 
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [activate, activeIndex, dismiss, focusInputAtEnd, orderedTabs]);
+  }, [activate, activeIndex, dismiss, displayList, focusInputAtEnd, mode, query, toggleSelectedMute, toggleSelectedPlay]);
 
   // Render the left rail with bucket headers (only when not searching).
   const showBuckets = query.trim().length === 0;
   let lastBucket = "";
+
+  const kbdClass = "rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70";
+  const footer =
+    mode === "audio" ? (
+      <div className="flex items-center justify-end gap-4 border-t border-white/[0.07] px-6 py-3 text-[11px] text-white/50">
+        <span className="flex items-center gap-1.5">
+          <kbd className={kbdClass}>space</kbd> play/pause
+        </span>
+        <span className="flex items-center gap-1.5">
+          <kbd className={kbdClass}>←/→</kbd> mute
+        </span>
+        <span className="flex items-center gap-1.5">
+          <kbd className={kbdClass}>↵</kbd> go to tab
+        </span>
+        <span className="flex items-center gap-1.5">
+          <kbd className={kbdClass}>tab</kbd> tabs
+        </span>
+        <span className="flex items-center gap-1.5">
+          <kbd className={kbdClass}>esc</kbd> close
+        </span>
+      </div>
+    ) : (
+      <div className="flex items-center justify-end gap-4 border-t border-white/[0.07] px-6 py-3 text-[11px] text-white/50">
+        <span className="flex items-center gap-1.5">
+          <kbd className={kbdClass}>↵</kbd> Switch to tab
+        </span>
+        <span className="flex items-center gap-1.5">
+          <kbd className={kbdClass}>esc</kbd> Close
+        </span>
+        {playingCount > 0 && (
+          <span className="flex items-center gap-1.5">
+            <kbd className={kbdClass}>tab</kbd> ♪
+          </span>
+        )}
+      </div>
+    );
 
   return (
     <div
@@ -323,10 +549,26 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
             spellCheck={false}
             aria-label="Search tabs"
           />
+          {(playingCount > 0 || mode === "audio") && (
+            <button
+              type="button"
+              onClick={() => setMode((prev) => (prev === "audio" ? "tabs" : "audio"))}
+              className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors ${
+                mode === "audio"
+                  ? "bg-[#0a84ff]/20 text-[#5eaeff] ring-1 ring-[#0a84ff]/40"
+                  : "bg-white/[0.08] text-white/70 hover:bg-white/[0.12]"
+              }`}
+              aria-label="Toggle audio playground"
+              aria-pressed={mode === "audio"}
+            >
+              <span aria-hidden="true">♪</span>
+              {playingCount} playing
+            </button>
+          )}
           <button
             type="button"
             onClick={() => void dismiss(true)}
-            className="grid h-7 w-7 place-items-center rounded-full bg-white/[0.06] text-white/55 transition-colors hover:bg-white/[0.12] hover:text-white/80"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-white/55 transition-colors hover:bg-white/[0.12] hover:text-white/80"
             aria-label="Close preview"
           >
             <X className="h-3.5 w-3.5" />
@@ -334,59 +576,153 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
         </div>
 
         <div ref={listRef} className="min-h-0 flex-1 space-y-0.5 overflow-auto px-2 py-2">
-          {loading && <div className="px-3 py-2 text-xs text-white/60">Loading tabs…</div>}
-          {!loading && orderedTabs.length === 0 && (
-            <div className="px-3 py-2 text-xs text-white/55">No matching tabs</div>
-          )}
+          {mode === "audio" ? (
+            <>
+              <div className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-white/30">
+                Now Playing
+              </div>
+              {audioList.length === 0 && (
+                <div className="flex flex-col items-center gap-2 px-4 py-12 text-center">
+                  <Music className="h-6 w-6 text-white/25" />
+                  <div className="text-xs text-white/45">No tabs are playing audio</div>
+                  <div className="text-[11px] text-white/30">press Tab to go back</div>
+                </div>
+              )}
+              {audioList.map((tab, index) => {
+                const active = index === activeIndex;
+                const state = playback.get(tab.id);
+                const playing = !!state?.playing && !tab.muted;
+                const uncontrollable = state?.mediaCount === 0;
+                const showHint = !!autoplayHint[tab.id];
 
-          {!loading &&
-            orderedTabs.map((tab, index) => {
-              const bucket = bucketLabel(tab.lastAccessed, now);
-              const header = showBuckets && bucket !== lastBucket ? bucket : null;
-              if (header) lastBucket = bucket;
-              const active = index === activeIndex;
-
-              return (
-                <div key={tab.id}>
-                  {header && (
-                    <div className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-white/30">
-                      {header}
-                    </div>
-                  )}
-                  <button
+                return (
+                  <div
+                    key={tab.id}
                     ref={(el) => {
                       itemRefs.current[index] = el;
                     }}
-                    type="button"
                     onMouseEnter={() => setActiveIndex(index)}
-                    onClick={() => void activate(tab)}
-                    className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${
+                    className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 transition-colors duration-100 ${
                       active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]"
-                    }`}
+                    } ${tab.muted ? "opacity-60" : ""}`}
                   >
+                    <button
+                      type="button"
+                      onClick={() => void activate(tab)}
+                      className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                    >
+                      <span
+                        className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${
+                          active ? "bg-white/20" : "bg-white/[0.08] text-white/80"
+                        }`}
+                      >
+                        {tab.favIconUrl ? (
+                          <img src={tab.favIconUrl} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          <Globe className="h-3.5 w-3.5" />
+                        )}
+                      </span>
+                      <AudioEq playing={playing} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">{tab.title}</span>
+                        <span className={`block truncate text-[11px] ${active ? "text-white/70" : "text-white/45"}`}>
+                          {showHint ? "click the tab to resume" : domainOf(tab.url)}
+                        </span>
+                      </span>
+                    </button>
                     <span
-                      className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${
-                        active ? "bg-white/20" : "bg-white/[0.08] text-white/80"
+                      role="button"
+                      tabIndex={-1}
+                      aria-label={playing ? "Pause" : "Play"}
+                      title={uncontrollable ? "mute only" : undefined}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (!uncontrollable) void sendPlayToggle(tab);
+                      }}
+                      className={`grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-white/70 transition-colors hover:bg-white/[0.12] ${
+                        uncontrollable ? "cursor-not-allowed opacity-40" : "cursor-pointer"
                       }`}
                     >
-                      {tab.favIconUrl ? (
-                        <img src={tab.favIconUrl} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
-                      ) : (
-                        <Globe className="h-3.5 w-3.5" />
-                      )}
+                      {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
                     </span>
-                    <span className="min-w-0 flex-1 truncate text-[13px] font-medium tracking-[-0.01em]">{tab.title}</span>
-                  </button>
-                </div>
-              );
-            })}
+                    <span
+                      role="button"
+                      tabIndex={-1}
+                      aria-label={tab.muted ? "Unmute" : "Mute"}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleMute(tab);
+                      }}
+                      className="grid h-7 w-7 shrink-0 cursor-pointer place-items-center rounded-full bg-white/[0.06] text-white/70 transition-colors hover:bg-white/[0.12]"
+                    >
+                      {tab.muted ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
+                    </span>
+                  </div>
+                );
+              })}
+            </>
+          ) : (
+            <>
+              {loading && <div className="px-3 py-2 text-xs text-white/60">Loading tabs…</div>}
+              {!loading && orderedTabs.length === 0 && (
+                <div className="px-3 py-2 text-xs text-white/55">No matching tabs</div>
+              )}
+
+              {!loading &&
+                orderedTabs.map((tab, index) => {
+                  const bucket = bucketLabel(tab.lastAccessed, now);
+                  const header = showBuckets && bucket !== lastBucket ? bucket : null;
+                  if (header) lastBucket = bucket;
+                  const active = index === activeIndex;
+
+                  return (
+                    <div key={tab.id}>
+                      {header && (
+                        <div className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-white/30">
+                          {header}
+                        </div>
+                      )}
+                      <button
+                        ref={(el) => {
+                          itemRefs.current[index] = el;
+                        }}
+                        type="button"
+                        onMouseEnter={() => setActiveIndex(index)}
+                        onClick={() => void activate(tab)}
+                        className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${
+                          active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]"
+                        }`}
+                      >
+                        <span
+                          className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${
+                            active ? "bg-white/20" : "bg-white/[0.08] text-white/80"
+                          }`}
+                        >
+                          {tab.favIconUrl ? (
+                            <img src={tab.favIconUrl} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <Globe className="h-3.5 w-3.5" />
+                          )}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-[13px] font-medium tracking-[-0.01em]">{tab.title}</span>
+                      </button>
+                    </div>
+                  );
+                })}
+            </>
+          )}
         </div>
       </div>
 
       {/* Right pane: preview of the focused tab */}
       <div className="flex min-h-0 flex-col">
         {!activeTabItem ? (
-          <div className="grid h-full place-items-center text-sm text-white/40">Select a tab to preview</div>
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="grid flex-1 place-items-center text-sm text-white/40">
+              {mode === "audio" && audioList.length === 0 ? "Nothing playing right now" : "Select a tab to preview"}
+            </div>
+            {footer}
+          </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col">
             {/* Hero (Tier 2 screenshot → Tier 1 og:image → Tier 0 favicon).
@@ -447,14 +783,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
               )}
             </div>
 
-            <div className="flex items-center justify-end gap-4 border-t border-white/[0.07] px-6 py-3 text-[11px] text-white/50">
-              <span className="flex items-center gap-1.5">
-                <kbd className="rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70">↵</kbd> Switch to tab
-              </span>
-              <span className="flex items-center gap-1.5">
-                <kbd className="rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70">esc</kbd> Close
-              </span>
-            </div>
+            {footer}
           </div>
         )}
       </div>

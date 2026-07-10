@@ -47,3 +47,41 @@ export interface PreviewCardCaptureMessage {
   type: "PREVIEW_CARD_CAPTURE";
   card: ContentCard;
 }
+
+/* ------------------------------ media control ----------------------------- */
+// Play/pause needs DOM access, so it routes: overlay iframe -> background ->
+// target tab's content script -> media elements.
+
+export type MediaAction = "toggle-play";
+
+/** Sent from the background to a tab's content script to act on its media. */
+export interface MediaControlMessage {
+  type: "MEDIA_CONTROL";
+  action: MediaAction;
+}
+
+/** Sent from the overlay iframe to the background to control another tab's media. */
+export interface MediaControlRequestMessage {
+  type: "MEDIA_CONTROL_REQUEST";
+  tabId: number;
+  action: MediaAction;
+}
+
+/** Result of a media control attempt, returned up through the same chain. */
+export interface MediaControlResult {
+  ok: boolean;
+  /** Resulting playback state. */
+  playing?: boolean;
+  /** Media elements found in the tab. */
+  mediaCount?: number;
+  /** "no-media" | "autoplay-blocked" | message. */
+  error?: string;
+}
+
+/** Broadcast by the background when a tab's audible/muted state changes. */
+export interface AudibleStateChangedMessage {
+  type: "AUDIBLE_STATE_CHANGED";
+  tabId: number;
+  audible?: boolean;
+  muted?: boolean;
+}

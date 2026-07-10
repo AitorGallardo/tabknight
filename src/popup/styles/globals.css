@@ -81,6 +81,29 @@
   }
 }
 
+/* Audio Playground equalizer (tab-preview overlay, audio mode) */
+@keyframes tk-eq {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.tk-eq-bar {
+  transform-origin: bottom;
+  animation: tk-eq 0.9s ease-in-out infinite;
+}
+
+.tk-eq--paused .tk-eq-bar {
+  animation-play-state: paused;
+  /* !important: CSS animations win over plain declarations, so a paused
+     mid-cycle bar would otherwise keep whatever scale it froze at. */
+  transform: scaleY(0.3) !important;
+}
+
 /* Checkbox styling fix */
 input[type="checkbox"] {
   accent-color: hsl(var(--primary));

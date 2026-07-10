@@ -1,5 +1,9 @@
 import { extractContentCard } from "../popup/lib/preview/harvester";
-import type { PreviewCardCaptureMessage } from "../popup/lib/preview/types";
+import type {
+  MediaControlMessage,
+  MediaControlResult,
+  PreviewCardCaptureMessage,
+} from "../popup/lib/preview/types";
 
 /* -------------------------- content-card harvester ------------------------ */
 // Build a lightweight preview snapshot of this page and hand it to the
@@ -153,10 +157,50 @@ document.addEventListener(
   true
 );
 
+/* --------------------------- media control (audio) ------------------------ */
+// Play/pause routes through here: overlay iframe -> background -> this tab's
+// content script -> media elements. Audio inside cross-origin iframes is
+// unreachable from here — querySelectorAll only sees the top document, so
+// those tabs report "no-media".
+
+async function handleMediaControl(message: MediaControlMessage): Promise<MediaControlResult> {
+  const media = Array.from(document.querySelectorAll<HTMLMediaElement>("video, audio"));
+  if (media.length === 0) {
+    return { ok: false, mediaCount: 0, error: "no-media" };
+  }
+
+  if (message.action !== "toggle-play") {
+    return { ok: false, mediaCount: media.length, error: "unsupported-action" };
+  }
+
+  const playing = media.filter((el) => !el.paused && !el.ended);
+  if (playing.length > 0) {
+    playing.forEach((el) => el.pause());
+    return { ok: true, playing: false, mediaCount: media.length };
+  }
+
+  const finite = media.filter((el) => Number.isFinite(el.duration));
+  const candidate = finite.length > 0
+    ? finite.reduce((best, el) => (el.duration > best.duration ? el : best))
+    : media[0];
+
+  try {
+    await candidate.play();
+    return { ok: true, playing: true, mediaCount: media.length };
+  } catch {
+    return { ok: false, playing: false, mediaCount: media.length, error: "autoplay-blocked" };
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "PREVIEW_OVERLAY_TOGGLE") {
     openPreviewOverlay();
     sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message?.type === "MEDIA_CONTROL") {
+    void handleMediaControl(message as MediaControlMessage).then(sendResponse);
     return true;
   }
 
