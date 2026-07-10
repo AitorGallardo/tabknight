@@ -5,6 +5,8 @@ import { getAllCards, getThumbnail } from "../lib/preview/db";
 import { hashUrl } from "../lib/preview/hash";
 import type { AudibleStateChangedMessage, ContentCard, MediaControlResult } from "../lib/preview/types";
 import { AudioEq } from "../components/AudioEq";
+import { scoreTab } from "../lib/rank";
+import { useListNavigation } from "../hooks/useListNavigation";
 
 interface TabPreviewViewProps {
   returnToTabId?: number | null;
@@ -51,25 +53,9 @@ interface PlaybackState {
 
 const PAUSE_DEBOUNCE_MS = 800;
 const HINT_MS = 2500;
+const THUMB_DEBOUNCE_MS = 70;
 
 const DAY = 24 * 60 * 60 * 1000;
-
-function scoreTab(tab: NavigatorTab, query: string): number {
-  const q = query.toLowerCase();
-  if (!q) {
-    return (tab.active ? 300 : 0) + (tab.pinned ? 30 : 0) + tab.lastAccessed / 1_000_000;
-  }
-  const title = tab.title.toLowerCase();
-  const url = tab.url.toLowerCase();
-  let score = 0;
-  if (title === q) score += 520;
-  if (title.startsWith(q)) score += 280;
-  if (title.includes(q)) score += 190;
-  if (url.includes(q)) score += 130;
-  if (tab.active) score += 20;
-  if (tab.pinned) score += 12;
-  return score;
-}
 
 /** Group label for the left rail, à la Grok's "Today / Last 7 days / ...". */
 function bucketLabel(lastAccessed: number, now: number): string {
@@ -109,8 +95,6 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   const [currentWindowId, setCurrentWindowId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const inputRef = useRef<HTMLInputElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
-  const itemRefs = useRef<Array<HTMLElement | null>>([]);
   const now = useMemo(() => Date.now(), [tabs]);
 
   // Audio Playground (Cmd+K "audio" mode): tabs mode is the default, primary
@@ -303,6 +287,14 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
       .map(({ tab }) => tab);
   }, [tabs, query, currentWindowId]);
 
+  // Rows sharing a title (e.g. several GitHub PRs, several Google Docs) get a
+  // domain hint appended so they stay distinguishable at a glance.
+  const duplicateTitleCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const tab of orderedTabs) counts.set(tab.title, (counts.get(tab.title) ?? 0) + 1);
+    return counts;
+  }, [orderedTabs]);
+
   // Audio Playground rail — sticky-audio tabs, filtered by the same search query.
   const audioList = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -323,16 +315,6 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
 
   // Keyboard navigation indexes into whichever list is on screen.
   const displayList = mode === "audio" ? audioList : orderedTabs;
-
-  useEffect(() => {
-    setActiveIndex(0);
-  }, [query]);
-
-  useEffect(() => {
-    if (activeIndex > displayList.length - 1) {
-      setActiveIndex(Math.max(0, displayList.length - 1));
-    }
-  }, [displayList.length, activeIndex]);
 
   const activeTabItem = displayList[activeIndex];
   const activeCard = activeTabItem ? cards.get(hashUrl(activeTabItem.url)) : undefined;
@@ -380,28 +362,50 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     chrome.storage.session.set({ [PREVIEW_SESSION_KEY]: { mode, selectedTabId } }).catch(() => {});
   }, [mode, activeTabItem?.id, loading, persistReady]);
 
-  // Lazily load the pixel thumbnail for the focused tab (Tier 2). We fetch one
-  // blob at a time and revoke its object URL when the selection changes.
+  // Lazily load the pixel thumbnail for the focused tab (Tier 2). Debounced by
+  // a dwell period so arrow-key mashing doesn't fire an IndexedDB read per
+  // keypress; the previously-displayed thumbnail stays put (never blank)
+  // while the user rests on a new row and the fetch resolves.
   const [thumb, setThumb] = useState<{ url: string; capturedAt: number } | null>(null);
+  const thumbRef = useRef<{ url: string; capturedAt: number } | null>(null);
+  const thumbRequestRef = useRef(0);
+  useEffect(() => {
+    thumbRef.current = thumb;
+  }, [thumb]);
+  useEffect(() => {
+    return () => {
+      if (thumbRef.current) URL.revokeObjectURL(thumbRef.current.url);
+    };
+  }, []);
+
   const activeUrl = activeTabItem?.url;
   useEffect(() => {
-    let cancelled = false;
-    let objectUrl: string | null = null;
-    setThumb(null);
-    if (!activeUrl) return;
+    // Clear synchronously on selection change so the tiered fallback
+    // (og:image -> favicon) shows for the new tab instead of the previous
+    // tab's stale screenshot while the debounced fetch is pending.
+    setThumb((prev) => {
+      if (prev) URL.revokeObjectURL(prev.url);
+      return null;
+    });
 
-    getThumbnail(hashUrl(activeUrl))
-      .then((record) => {
-        if (cancelled || !record) return;
-        objectUrl = URL.createObjectURL(record.blob);
-        setThumb({ url: objectUrl, capturedAt: record.capturedAt });
-      })
-      .catch(() => {});
+    if (!activeUrl) {
+      return;
+    }
 
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
+    const requestId = ++thumbRequestRef.current;
+    const timer = setTimeout(() => {
+      getThumbnail(hashUrl(activeUrl))
+        .then((record) => {
+          if (thumbRequestRef.current !== requestId) return; // superseded by a newer selection
+          setThumb((prev) => {
+            if (prev) URL.revokeObjectURL(prev.url);
+            return record ? { url: URL.createObjectURL(record.blob), capturedAt: record.capturedAt } : null;
+          });
+        })
+        .catch(() => {});
+    }, THUMB_DEBOUNCE_MS);
+
+    return () => clearTimeout(timer);
   }, [activeUrl]);
 
   const focusInputAtEnd = useCallback(() => {
@@ -411,19 +415,6 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     const caret = input.value.length;
     input.setSelectionRange(caret, caret);
   }, []);
-
-  useEffect(() => {
-    const list = listRef.current;
-    const item = itemRefs.current[activeIndex];
-    if (!list || !item) return;
-    const itemTop = item.offsetTop;
-    const itemBottom = itemTop + item.offsetHeight;
-    if (itemTop < list.scrollTop + 8) {
-      list.scrollTop = Math.max(0, itemTop - 8);
-    } else if (itemBottom > list.scrollTop + list.clientHeight - 8) {
-      list.scrollTop = Math.min(list.scrollHeight - list.clientHeight, itemBottom - list.clientHeight + 8);
-    }
-  }, [activeIndex, displayList.length]);
 
   const dismiss = useCallback(
     async (restoreOrigin: boolean) => {
@@ -552,74 +543,65 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     setAnnouncement("All tabs");
   }, [orderedTabs]);
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      const targetIsInput =
-        target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+  const onActivate = useCallback(
+    (index: number) => {
+      void activate(displayList[index]);
+    },
+    [displayList, activate]
+  );
 
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const onEscape = useCallback(() => {
+    if (query !== "") {
+      setQuery("");
+      focusInputAtEnd();
+    } else if (mode === "audio") {
+      enterTabsMode();
+    } else {
+      void dismiss(true);
+    }
+  }, [query, mode, enterTabsMode, dismiss, focusInputAtEnd]);
 
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setActiveIndex((prev) => Math.min(prev + 1, Math.max(0, displayList.length - 1)));
-        focusInputAtEnd();
-      } else if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setActiveIndex((prev) => Math.max(prev - 1, 0));
-        focusInputAtEnd();
-      } else if (event.key === "Enter") {
-        event.preventDefault();
-        void activate(displayList[activeIndex]);
-      } else if (event.key === "Escape") {
-        event.preventDefault();
-        if (query !== "") {
-          setQuery("");
-          focusInputAtEnd();
-        } else if (mode === "audio") {
-          enterTabsMode();
-        } else {
-          void dismiss(true);
-        }
-      } else if (event.key === "Tab") {
+  // Tab mode-cycle, Space play/pause, ArrowLeft/Right mute, and audio-mode
+  // Backspace-to-back all live outside the generic list-navigation machinery.
+  const preKeyDown = useCallback(
+    (event: KeyboardEvent): boolean => {
+      if (event.key === "Tab") {
         event.preventDefault();
         if (mode === "tabs") enterAudioMode();
         else enterTabsMode();
-      } else if (mode === "audio" && query === "" && event.key === " ") {
+        return true;
+      }
+      if (mode === "audio" && query === "" && event.key === " ") {
         event.preventDefault();
         toggleSelectedPlay();
-      } else if (mode === "audio" && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+        return true;
+      }
+      if (mode === "audio" && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
         event.preventDefault();
         toggleSelectedMute();
-      } else if (mode === "audio" && query === "" && event.key === "Backspace") {
+        return true;
+      }
+      if (mode === "audio" && query === "" && event.key === "Backspace") {
         event.preventDefault();
         enterTabsMode();
-      } else if (!targetIsInput && event.key === "Backspace") {
-        event.preventDefault();
-        setQuery((prev) => prev.slice(0, -1));
-        focusInputAtEnd();
-      } else if (!targetIsInput && event.key.length === 1 && !event.repeat) {
-        event.preventDefault();
-        setQuery((prev) => prev + event.key);
-        focusInputAtEnd();
+        return true;
       }
-    };
+      return false;
+    },
+    [mode, query, enterAudioMode, enterTabsMode, toggleSelectedPlay, toggleSelectedMute]
+  );
 
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [
-    activate,
-    activeIndex,
-    dismiss,
-    displayList,
-    enterAudioMode,
-    enterTabsMode,
-    focusInputAtEnd,
-    mode,
+  const { listRef, registerItem } = useListNavigation({
+    itemCount: displayList.length,
     query,
-    toggleSelectedMute,
-    toggleSelectedPlay,
-  ]);
+    setQuery,
+    activeIndex,
+    setActiveIndex,
+    focusInputAtEnd,
+    onActivate,
+    onEscape,
+    preKeyDown,
+  });
 
   // Render the left rail with bucket headers (only when not searching).
   const showBuckets = query.trim().length === 0;
@@ -636,7 +618,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           <kbd className={kbdClass}>←/→</kbd> mute
         </span>
         <span className="flex items-center gap-1.5">
-          <kbd className={kbdClass}>↵</kbd> go to tab
+          <kbd className={kbdClass}>↵</kbd> Switch to tab
         </span>
         <span className="flex items-center gap-1.5">
           <kbd className={kbdClass}>tab</kbd> tabs
@@ -717,8 +699,9 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           role="listbox"
           aria-label={mode === "audio" ? "Tabs playing audio" : "Open tabs"}
           aria-activedescendant={activeTabItem ? `tk-row-${activeTabItem.id}` : undefined}
-          className="min-h-0 flex-1 space-y-0.5 overflow-auto px-2 py-2"
+          className="min-h-0 flex-1 overflow-auto px-2 py-2"
         >
+          <div key={mode} className="tk-mode-fade space-y-0.5">
           {mode === "audio" ? (
             <>
               <div className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-white/30">
@@ -744,9 +727,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                     id={`tk-row-${tab.id}`}
                     role="option"
                     aria-selected={active}
-                    ref={(el) => {
-                      itemRefs.current[index] = el;
-                    }}
+                    ref={registerItem(index)}
                     onMouseEnter={() => setActiveIndex(index)}
                     className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 transition-colors duration-100 ${
                       active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]"
@@ -819,7 +800,9 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
             <>
               {loading && <div className="px-3 py-2 text-xs text-white/60">Loading tabs…</div>}
               {!loading && orderedTabs.length === 0 && (
-                <div className="px-3 py-2 text-xs text-white/55">No matching tabs</div>
+                <div className="px-3 py-2 text-xs text-white/55">
+                  {query.trim() ? "No matching tabs" : "No other tabs open"}
+                </div>
               )}
 
               {!loading &&
@@ -828,6 +811,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                   const header = showBuckets && bucket !== lastBucket ? bucket : null;
                   if (header) lastBucket = bucket;
                   const active = index === activeIndex;
+                  const isDuplicateTitle = (duplicateTitleCounts.get(tab.title) ?? 0) > 1;
 
                   return (
                     <div key={tab.id}>
@@ -837,9 +821,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                         </div>
                       )}
                       <button
-                        ref={(el) => {
-                          itemRefs.current[index] = el;
-                        }}
+                        ref={registerItem(index)}
                         id={`tk-row-${tab.id}`}
                         role="option"
                         aria-selected={active}
@@ -861,18 +843,27 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                             <Globe className="h-3.5 w-3.5" />
                           )}
                         </span>
-                        <span className="min-w-0 flex-1 truncate text-[13px] font-medium tracking-[-0.01em]">{tab.title}</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">{tab.title}</span>
+                          {isDuplicateTitle && (
+                            <span className={`block truncate text-[11px] ${active ? "text-white/70" : "text-white/45"}`}>
+                              {domainOf(tab.url)}
+                            </span>
+                          )}
+                        </span>
                       </button>
                     </div>
                   );
                 })}
             </>
           )}
+          </div>
         </div>
       </div>
 
       {/* Right pane: preview of the focused tab */}
       <div className="flex min-h-0 flex-col">
+        <div key={mode} className="tk-mode-fade flex min-h-0 flex-1 flex-col">
         {!activeTabItem ? (
           <div className="flex h-full min-h-0 flex-col">
             <div className="grid flex-1 place-items-center text-sm text-white/40">
@@ -883,26 +874,33 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
         ) : (
           <div className="flex min-h-0 flex-1 flex-col">
             {/* Hero (Tier 2 screenshot → Tier 1 og:image → Tier 0 favicon).
-                Takes 60% of the pane height; the description below gets 40%. */}
+                Takes 60% of the pane height; the description below gets 40%.
+                Keyed by tab + resolved tier so an upgrade or a selection
+                change cross-fades in rather than hard-swapping. */}
             <div
               className="relative min-h-0 flex-[3] overflow-hidden border-b border-white/[0.07]"
               style={{ background: activeCard?.themeColor ? `${activeCard.themeColor}22` : "rgba(255,255,255,0.03)" }}
             >
-              {thumb ? (
-                <img src={thumb.url} alt="" className="h-full w-full object-cover object-top" />
-              ) : activeCard?.ogImage ? (
-                <img src={activeCard.ogImage} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
-              ) : (
-                <div className="grid h-full place-items-center">
-                  <span className="grid h-12 w-12 place-items-center overflow-hidden rounded-xl bg-white/8">
-                    {activeTabItem.favIconUrl ? (
-                      <img src={activeTabItem.favIconUrl} alt="" className="h-7 w-7 object-cover" referrerPolicy="no-referrer" />
-                    ) : (
-                      <Globe className="h-6 w-6 text-white/60" />
-                    )}
-                  </span>
-                </div>
-              )}
+              <div
+                key={`${activeTabItem.id}:${thumb?.url ?? activeCard?.ogImage ?? "icon"}`}
+                className="tk-hero-fade h-full w-full"
+              >
+                {thumb ? (
+                  <img src={thumb.url} alt="" className="h-full w-full object-cover object-top" />
+                ) : activeCard?.ogImage ? (
+                  <img src={activeCard.ogImage} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                ) : (
+                  <div className="grid h-full place-items-center">
+                    <span className="grid h-12 w-12 place-items-center overflow-hidden rounded-xl bg-white/8">
+                      {activeTabItem.favIconUrl ? (
+                        <img src={activeTabItem.favIconUrl} alt="" className="h-7 w-7 object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        <Globe className="h-6 w-6 text-white/60" />
+                      )}
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="min-h-0 flex-[2] overflow-auto px-6 py-5">
@@ -943,6 +941,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
             {footer}
           </div>
         )}
+        </div>
       </div>
     </div>
   );

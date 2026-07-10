@@ -1,5 +1,4 @@
 import { cn } from "../lib/cn";
-import { Badge } from "./ui/badge";
 import { truncate } from "../lib/utils";
 import type { TabInfo } from "../types";
 
@@ -13,9 +12,8 @@ export function TabItem({ tab, selected, onToggle }: TabItemProps) {
   return (
     <label
       className={cn(
-        "flex items-center gap-2 px-2 py-1.5 cursor-pointer transition-colors rounded",
-        "hover:bg-accent/50",
-        selected && "bg-accent/30"
+        "flex w-full cursor-pointer items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 transition-colors duration-100",
+        selected ? "bg-[#0a84ff]/12 text-white/80" : "text-white/80 hover:bg-white/[0.06]"
       )}
     >
       <input
@@ -23,36 +21,38 @@ export function TabItem({ tab, selected, onToggle }: TabItemProps) {
         checked={selected}
         onChange={() => onToggle(tab.id)}
         className={cn(
-          "h-3.5 w-3.5 shrink-0 rounded border border-input shadow-sm",
-          "checked:bg-primary checked:border-primary",
-          "focus:ring-[2px] focus:ring-ring/30"
+          "h-4 w-4 shrink-0 rounded-[4px] border border-white/20 bg-white/[0.06]",
+          "checked:bg-[#0a84ff] checked:border-[#0a84ff]",
+          "focus:ring-1 focus:ring-[#0a84ff]/40"
         )}
       />
-      <img
-        src={tab.favIconUrl || "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect fill='%23888' width='16' height='16' rx='2'/></svg>"}
-        alt=""
-        className="h-4 w-4 shrink-0 rounded"
-        onError={(e) => {
-          (e.target as HTMLImageElement).src =
-            "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect fill='%23888' width='16' height='16' rx='2'/></svg>";
-        }}
-      />
+      <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md bg-white/[0.08] text-white/80">
+        <img
+          src={tab.favIconUrl || "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect fill='%23888' width='16' height='16' rx='2'/></svg>"}
+          alt=""
+          className="h-full w-full object-cover"
+          onError={(e) => {
+            (e.target as HTMLImageElement).src =
+              "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect fill='%23888' width='16' height='16' rx='2'/></svg>";
+          }}
+        />
+      </span>
       <span
-        className="flex-1 text-xs truncate"
+        className="flex-1 truncate text-[13px] font-medium tracking-[-0.01em]"
         title={tab.title}
       >
         {truncate(tab.title, 50)}
       </span>
       <div className="flex items-center gap-1 shrink-0">
         {tab.pinned && (
-          <Badge variant="secondary" className="text-[10px] px-1 py-0">
+          <span className="rounded-full bg-white/[0.08] px-1.5 py-0.5 text-[10px] text-white/45">
             Pinned
-          </Badge>
+          </span>
         )}
         {tab.isDuplicate && (
-          <Badge variant="warning" className="text-[10px] px-1 py-0">
+          <span className="rounded-full bg-white/[0.08] px-1.5 py-0.5 text-[10px] text-white/45">
             Duplicate
-          </Badge>
+          </span>
         )}
       </div>
     </label>

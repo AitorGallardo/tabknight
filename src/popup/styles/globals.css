@@ -114,10 +114,48 @@
   transform: scaleY(0.3) !important;
 }
 
+/* Tab-preview overlay: right-pane hero cross-fade (Tier 2 → 1 → 0 upgrades,
+   and selection changes). Keyed remount + animation-on-mount, no JS timers. */
+@keyframes tk-hero-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.tk-hero-fade {
+  animation: tk-hero-fade 150ms ease-out;
+}
+
+/* Tab-preview overlay: tabs <-> audio mode switch. Purely visual — keyboard
+   handling is unaffected since it never waits on this animation. */
+@keyframes tk-mode-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.tk-mode-fade {
+  animation: tk-mode-fade 120ms ease-out;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .tk-eq-bar {
     animation: none !important;
     transform: scaleY(0.6) !important;
+  }
+
+  .tk-hero-fade {
+    animation: none !important;
+  }
+
+  .tk-mode-fade {
+    animation: none !important;
   }
 
   .transition-colors {

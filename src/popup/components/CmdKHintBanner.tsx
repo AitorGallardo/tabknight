@@ -47,7 +47,7 @@ export function CmdKHintBanner() {
   if (dismissed) return null;
 
   return (
-    <div className="flex items-center justify-between gap-2 border-b border-white/10 bg-white/[0.04] px-3 py-2 text-[11px] text-white/70 backdrop-blur-sm">
+    <div className="flex items-center justify-between gap-2 border-b border-white/[0.07] bg-white/[0.04] px-3 py-2 text-[11px] text-white/70 backdrop-blur-sm">
       {unbound ? (
         <button
           type="button"

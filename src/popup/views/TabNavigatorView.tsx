@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Globe, Search, X } from "lucide-react";
+import { Globe, Search, X } from "lucide-react";
 import { activateTab, getAllTabs, openTabFromQuery } from "../lib/chrome-api";
+import { scoreTab } from "../lib/rank";
+import { useListNavigation } from "../hooks/useListNavigation";
 
 interface TabNavigatorViewProps {
   onOpenSaveFlow?: () => void;
@@ -25,25 +27,7 @@ type NavigatorItem =
   | { type: "open"; id: "open"; title: string; subtitle: string }
   | { type: "tab"; id: string; tab: NavigatorTab; score: number };
 
-function scoreTab(tab: NavigatorTab, query: string): number {
-  const q = query.toLowerCase();
-
-  if (!q) {
-    return (tab.active ? 300 : 0) + (tab.pinned ? 30 : 0) + tab.lastAccessed / 1_000_000;
-  }
-
-  const title = tab.title.toLowerCase();
-  const url = tab.url.toLowerCase();
-
-  let score = 0;
-  if (title === q) score += 520;
-  if (title.startsWith(q)) score += 280;
-  if (title.includes(q)) score += 190;
-  if (url.includes(q)) score += 130;
-  if (tab.active) score += 20;
-  if (tab.pinned) score += 12;
-  return score;
-}
+const SCROLL_INSETS = { top: 10, bottom: 26 };
 
 export function TabNavigatorView({
   onOpenSaveFlow,
@@ -58,8 +42,6 @@ export function TabNavigatorView({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
-  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   useEffect(() => {
     const loadTabs = async () => {
@@ -139,16 +121,6 @@ export function TabNavigatorView({
     ];
   }, [tabs, query, currentWindowId]);
 
-  useEffect(() => {
-    setActiveIndex(0);
-  }, [query]);
-
-  useEffect(() => {
-    if (activeIndex > items.length - 1) {
-      setActiveIndex(Math.max(0, items.length - 1));
-    }
-  }, [items.length, activeIndex]);
-
   const focusInputAtEnd = useCallback(() => {
     const input = inputRef.current;
     if (!input) return;
@@ -157,31 +129,6 @@ export function TabNavigatorView({
     const nextCaret = input.value.length;
     input.setSelectionRange(nextCaret, nextCaret);
   }, []);
-
-  useEffect(() => {
-    const list = listRef.current;
-    const activeItem = itemRefs.current[activeIndex];
-    if (!list || !activeItem) return;
-
-    const topInset = 10;
-    const bottomInset = 26;
-    const itemTop = activeItem.offsetTop;
-    const itemBottom = itemTop + activeItem.offsetHeight;
-    const viewportTop = list.scrollTop;
-    const viewportBottom = viewportTop + list.clientHeight;
-
-    if (itemTop < viewportTop + topInset) {
-      list.scrollTop = Math.max(0, itemTop - topInset);
-      return;
-    }
-
-    if (itemBottom > viewportBottom - bottomInset) {
-      list.scrollTop = Math.min(
-        list.scrollHeight - list.clientHeight,
-        itemBottom - list.clientHeight + bottomInset
-      );
-    }
-  }, [activeIndex, items.length]);
 
   const closeCurrentNavigatorTab = useCallback(async () => {
     try {
@@ -238,65 +185,39 @@ export function TabNavigatorView({
     await dismissNavigator(false);
   }, [dismissNavigator, query]);
 
-  useEffect(() => {
-    const handleGlobalKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      const targetIsInput =
-        target?.tagName === "INPUT" ||
-        target?.tagName === "TEXTAREA" ||
-        target?.isContentEditable;
+  const onActivate = useCallback(
+    (index: number) => {
+      void executeItem(items[index]);
+    },
+    [items, executeItem]
+  );
 
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const onEscape = useCallback(() => {
+    if (query !== "") {
+      setQuery("");
+      focusInputAtEnd();
+      return;
+    }
+    void dismissNavigator(true);
+  }, [query, setQuery, focusInputAtEnd, dismissNavigator]);
 
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setActiveIndex((prev) => Math.min(prev + 1, Math.max(0, items.length - 1)));
-        focusInputAtEnd();
-        return;
-      }
+  const { listRef, registerItem } = useListNavigation({
+    itemCount: items.length,
+    query,
+    setQuery,
+    activeIndex,
+    setActiveIndex,
+    focusInputAtEnd,
+    onActivate,
+    onEscape,
+    scrollInsets: SCROLL_INSETS,
+  });
 
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setActiveIndex((prev) => Math.max(prev - 1, 0));
-        focusInputAtEnd();
-        return;
-      }
-
-      if (event.key === "Enter") {
-        event.preventDefault();
-        void executeItem(items[activeIndex]);
-        return;
-      }
-
-      if (event.key === "Escape") {
-        event.preventDefault();
-        void dismissNavigator(true);
-        return;
-      }
-
-      if (!targetIsInput && event.key === "Backspace") {
-        event.preventDefault();
-        setQuery((prev) => prev.slice(0, -1));
-        focusInputAtEnd();
-        return;
-      }
-
-      if (!targetIsInput && event.key.length === 1 && !event.repeat) {
-        event.preventDefault();
-        setQuery((prev) => prev + event.key);
-        focusInputAtEnd();
-      }
-    };
-
-    document.addEventListener("keydown", handleGlobalKeyDown, true);
-    return () => {
-      document.removeEventListener("keydown", handleGlobalKeyDown, true);
-    };
-  }, [activeIndex, dismissNavigator, executeItem, focusInputAtEnd, items]);
+  const kbdClass = "rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70";
 
   return (
     <div
-      className="h-full w-full text-[#f4f5f8]"
+      className="flex h-full w-full flex-col text-[#f4f5f8]"
       onMouseDownCapture={(event) => {
         const target = event.target as HTMLElement | null;
         if (!target || target.closest("button") || target.tagName === "INPUT") return;
@@ -306,136 +227,124 @@ export function TabNavigatorView({
         });
       }}
     >
-      <div className="relative h-full w-full overflow-hidden rounded-[18px] border border-white/15 bg-[linear-gradient(180deg,rgba(16,18,25,0.74),rgba(10,12,18,0.72))] shadow-[0_32px_90px_rgba(0,0,0,0.48)] backdrop-blur-[22px]">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(62%_85%_at_74%_82%,rgba(104,54,18,0.17),transparent_66%),radial-gradient(58%_80%_at_28%_22%,rgba(38,56,122,0.14),transparent_70%)]" />
-        <div className="relative flex h-full flex-col">
-          <div className="flex items-center gap-2 border-b border-white/10 px-3 py-3">
-            <Search className="h-4 w-4 shrink-0 text-white/90" />
-            <input
-              ref={inputRef}
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search or Enter URL..."
-              className="h-10 w-full border-none bg-transparent text-[clamp(1.05rem,1.35vw,1.85rem)] font-semibold tracking-[-0.02em] text-white/92 outline-none placeholder:text-[0.82em] placeholder:font-medium placeholder:tracking-[-0.01em] placeholder:text-white/28"
-              autoComplete="off"
-              spellCheck={false}
-              aria-label="Search tabs"
-            />
-            {showSaveButton && onOpenSaveFlow && (
+      <div className="flex items-center gap-2 border-b border-white/[0.07] px-3 py-3">
+        <Search className="h-4 w-4 shrink-0 text-white/55" />
+        <input
+          ref={inputRef}
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search or enter URL…"
+          className="h-8 w-full border-none bg-transparent text-base font-medium tracking-[-0.01em] text-white/92 outline-none placeholder:text-white/30"
+          autoComplete="off"
+          spellCheck={false}
+          aria-label="Search tabs"
+        />
+        {showSaveButton && onOpenSaveFlow && (
+          <button
+            type="button"
+            onClick={onOpenSaveFlow}
+            className="shrink-0 rounded-full bg-white/[0.08] px-2.5 py-1 text-[11px] text-white/70 hover:bg-white/[0.12]"
+          >
+            Save
+          </button>
+        )}
+        {temporary && (
+          <button
+            type="button"
+            onClick={() => {
+              void dismissNavigator(true);
+            }}
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-white/70 transition-colors hover:bg-white/[0.12]"
+            aria-label="Close navigator"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+
+      <div ref={listRef} className="min-h-0 flex-1 space-y-0.5 overflow-auto px-2 py-2">
+        {loading && <div className="px-2.5 py-1.5 text-xs text-white/60">Loading tabs…</div>}
+
+        {!loading && error && (
+          <div className="rounded-[10px] border border-red-400/25 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+            {error}
+          </div>
+        )}
+
+        {!loading && !error && items.length === 0 && (
+          <div className="px-2.5 py-1.5 text-xs text-white/55">No matching tabs</div>
+        )}
+
+        {!loading &&
+          !error &&
+          items.map((item, index) => {
+            const active = index === activeIndex;
+            const rowClass = active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]";
+            const tileClass = active ? "bg-white/20" : "bg-white/[0.08] text-white/80";
+            const subClass = active ? "text-white/70" : "text-white/45";
+
+            if (item.type === "open") {
+              return (
+                <button
+                  key={item.id}
+                  ref={registerItem(index)}
+                  type="button"
+                  onMouseEnter={() => setActiveIndex(index)}
+                  onClick={() => {
+                    void executeItem(item);
+                  }}
+                  className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${rowClass}`}
+                >
+                  <span className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${tileClass}`}>
+                    <Search className="h-3.5 w-3.5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">{item.title}</span>
+                    <span className={`block truncate text-[11px] ${subClass}`}>{item.subtitle}</span>
+                  </span>
+                </button>
+              );
+            }
+
+            return (
               <button
+                key={item.id}
+                ref={registerItem(index)}
                 type="button"
-                onClick={onOpenSaveFlow}
-                className="rounded-md border border-white/16 bg-black/10 px-2 py-1 text-[11px] text-white/78 hover:bg-white/10"
-              >
-                Save
-              </button>
-            )}
-            {temporary && (
-              <button
-                type="button"
+                onMouseEnter={() => setActiveIndex(index)}
                 onClick={() => {
-                  void dismissNavigator(true);
+                  void executeItem(item);
                 }}
-                className="grid h-7 w-7 place-items-center rounded-full border border-white/14 bg-black/20 text-white/78 hover:bg-white/10"
-                aria-label="Close navigator"
+                className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${rowClass}`}
               >
-                <X className="h-3.5 w-3.5" />
+                <span className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${tileClass}`}>
+                  {item.tab.favIconUrl ? (
+                    <img
+                      src={item.tab.favIconUrl}
+                      alt=""
+                      className="h-full w-full object-cover"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <Globe className="h-3.5 w-3.5" />
+                  )}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">{item.tab.title}</span>
+                  <span className={`block truncate text-[11px] ${subClass}`}>{item.tab.url}</span>
+                </span>
               </button>
-            )}
-          </div>
+            );
+          })}
+      </div>
 
-          <div ref={listRef} className="max-h-[420px] space-y-1 overflow-auto px-2 pb-6 pt-2">
-            {loading && <div className="px-3 py-2 text-xs text-white/65">Loading tabs...</div>}
-
-            {!loading && error && (
-              <div className="rounded-lg border border-red-400/25 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                {error}
-              </div>
-            )}
-
-            {!loading && !error && items.length === 0 && (
-              <div className="px-3 py-2 text-xs text-white/60">No matching tabs</div>
-            )}
-
-            {!loading &&
-              !error &&
-              items.map((item, index) => {
-                const active = index === activeIndex;
-                const itemClass = active
-                  ? "border-white/12 bg-white/14"
-                  : "border-transparent bg-transparent hover:bg-white/8";
-
-                if (item.type === "open") {
-                  return (
-                    <button
-                      key={item.id}
-                      ref={(element) => {
-                        itemRefs.current[index] = element;
-                      }}
-                      type="button"
-                      onMouseEnter={() => setActiveIndex(index)}
-                      onClick={() => {
-                        void executeItem(item);
-                      }}
-                      className={`grid w-full scroll-mt-2 scroll-mb-4 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${itemClass}`}
-                    >
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold text-white/94">{item.title}</div>
-                        <div className="truncate text-[11px] text-white/56">{item.subtitle}</div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-semibold text-white/72">Open</span>
-                        <span className="grid h-8 w-8 place-items-center rounded-md bg-white/12">
-                          <ArrowRight className="h-4 w-4 text-white/88" />
-                        </span>
-                      </div>
-                    </button>
-                  );
-                }
-
-                return (
-                  <button
-                    key={item.id}
-                    ref={(element) => {
-                      itemRefs.current[index] = element;
-                    }}
-                    type="button"
-                    onMouseEnter={() => setActiveIndex(index)}
-                    onClick={() => {
-                      void executeItem(item);
-                    }}
-                    className={`grid w-full scroll-mt-2 scroll-mb-4 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${itemClass}`}
-                  >
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className="grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-md bg-white/8 text-white/80">
-                        {item.tab.favIconUrl ? (
-                          <img
-                            src={item.tab.favIconUrl}
-                            alt=""
-                            className="h-full w-full object-cover"
-                            referrerPolicy="no-referrer"
-                          />
-                        ) : (
-                          <Globe className="h-4 w-4" />
-                        )}
-                      </span>
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold text-white/94">{item.tab.title}</div>
-                        <div className="truncate text-[11px] text-white/52">{item.tab.url}</div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold text-white/72">Switch to Tab</span>
-                      <span className="grid h-8 w-8 place-items-center rounded-md bg-white/12">
-                        <ArrowRight className="h-4 w-4 text-white/88" />
-                      </span>
-                    </div>
-                  </button>
-                );
-              })}
-          </div>
-        </div>
+      <div className="flex items-center justify-end gap-4 border-t border-white/[0.07] px-4 py-3 text-[11px] text-white/50">
+        <span className="flex items-center gap-1.5">
+          <kbd className={kbdClass}>↵</kbd> Switch to tab
+        </span>
+        <span className="flex items-center gap-1.5">
+          <kbd className={kbdClass}>esc</kbd> {query !== "" ? "Clear" : "Close"}
+        </span>
       </div>
     </div>
   );

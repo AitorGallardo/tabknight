@@ -37,8 +37,8 @@ export function TabList({
 
   if (totalTabs === 0) {
     return (
-      <div className="flex items-center justify-center h-32 text-xs text-muted-foreground">
-        {searchQuery ? "No tabs match your search" : "No tabs available"}
+      <div className="flex flex-col items-center gap-2 px-4 py-12 text-center text-xs text-white/45">
+        {searchQuery ? "No tabs match" : "No tabs to save"}
       </div>
     );
   }

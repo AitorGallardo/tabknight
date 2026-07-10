@@ -105,7 +105,7 @@ export function SaveTabsView({ onSaveComplete }: SaveTabsViewProps) {
   if (tabsLoading) {
     return (
       <div className="flex items-center justify-center h-full">
-        <div className="text-xs text-muted-foreground">Loading tabs...</div>
+        <div className="text-xs text-white/45">Loading tabs...</div>
       </div>
     );
   }
@@ -122,13 +122,15 @@ export function SaveTabsView({ onSaveComplete }: SaveTabsViewProps) {
     );
   }
 
+  const kbdClass = "rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70";
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="shrink-0 p-3 border-b border-border space-y-3">
+      <div className="shrink-0 border-b border-white/[0.07] px-3 py-3 space-y-3">
         <div className="flex items-center gap-2">
-          <Bookmark className="h-4 w-4 text-primary" />
-          <h1 className="text-sm font-semibold">Save Tabs as Bookmarks</h1>
+          <Bookmark className="h-4 w-4 text-[#5eaeff]" />
+          <h1 className="text-sm font-semibold text-white/90">Save Tabs as Bookmarks</h1>
         </div>
 
         <SearchFilter value={searchQuery} onChange={setSearchQuery} />
@@ -150,7 +152,7 @@ export function SaveTabsView({ onSaveComplete }: SaveTabsViewProps) {
       />
 
       {/* Footer */}
-      <div className="shrink-0 p-3 border-t border-border space-y-3">
+      <div className="shrink-0 border-t border-white/[0.07] px-3 py-3 space-y-3">
         {error && (
           <StatusMessage
             type="error"
@@ -159,7 +161,7 @@ export function SaveTabsView({ onSaveComplete }: SaveTabsViewProps) {
         )}
 
         <div className="space-y-2">
-          <label className="text-xs text-muted-foreground">Folder name</label>
+          <label className="text-[10px] uppercase tracking-[0.08em] text-white/40">Folder name</label>
           <Input
             value={folderName}
             onChange={(e) => setFolderName(e.target.value)}
@@ -168,7 +170,7 @@ export function SaveTabsView({ onSaveComplete }: SaveTabsViewProps) {
         </div>
 
         <div className="space-y-2">
-          <label className="text-xs text-muted-foreground">Save in</label>
+          <label className="text-[10px] uppercase tracking-[0.08em] text-white/40">Save in</label>
           <FolderPicker
             folders={folders}
             value={selectedFolderId}
@@ -185,9 +187,17 @@ export function SaveTabsView({ onSaveComplete }: SaveTabsViewProps) {
           {saving ? "Saving..." : `Save ${selectedCount} Tab${selectedCount !== 1 ? "s" : ""}`}
         </Button>
 
-        <p className="text-[10px] text-center text-muted-foreground">
-          Enter to save | Ctrl+A to select all | Esc to close
-        </p>
+        <div className="flex items-center justify-end gap-4 text-[11px] text-white/50">
+          <span className="flex items-center gap-1.5">
+            <kbd className={kbdClass}>↵</kbd> Save
+          </span>
+          <span className="flex items-center gap-1.5">
+            <kbd className={kbdClass}>⌘A</kbd> Select all
+          </span>
+          <span className="flex items-center gap-1.5">
+            <kbd className={kbdClass}>esc</kbd> Close
+          </span>
+        </div>
       </div>
     </div>
   );

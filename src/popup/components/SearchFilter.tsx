@@ -1,7 +1,5 @@
 import { useState, useEffect } from "react";
 import { Search, X } from "lucide-react";
-import { Input } from "./ui/input";
-import { cn } from "../lib/cn";
 import { SEARCH_DEBOUNCE_MS } from "../lib/constants";
 
 interface SearchFilterProps {
@@ -32,22 +30,23 @@ export function SearchFilter({
   }, [value]);
 
   return (
-    <div className="relative">
-      <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-      <Input
+    <div className="flex items-center gap-2">
+      <Search className="h-4 w-4 shrink-0 text-white/55" />
+      <input
         type="text"
         value={localValue}
         onChange={(e) => setLocalValue(e.target.value)}
         placeholder={placeholder}
-        className={cn("pl-7", localValue && "pr-7")}
+        className="h-8 w-full border-none bg-transparent text-base font-medium tracking-[-0.01em] text-white/92 outline-none placeholder:text-white/30"
       />
       {localValue && (
         <button
+          type="button"
           onClick={() => {
             setLocalValue("");
             onChange("");
           }}
-          className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+          className="shrink-0 text-white/45 hover:text-white/80"
         >
           <X className="h-3.5 w-3.5" />
         </button>

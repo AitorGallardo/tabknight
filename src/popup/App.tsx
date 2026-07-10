@@ -126,8 +126,13 @@ export function App() {
 
   return (
     <div
-      className="flex flex-col bg-background text-foreground overflow-hidden"
-      style={{ width: POPUP_WIDTH, height: POPUP_HEIGHT }}
+      className="flex flex-col overflow-hidden bg-[linear-gradient(180deg,rgba(28,28,30,0.86),rgba(20,20,22,0.84))] text-[#f5f5f7]"
+      style={{
+        width: POPUP_WIDTH,
+        height: POPUP_HEIGHT,
+        fontFamily:
+          '-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", system-ui, sans-serif',
+      }}
     >
       <CmdKHintBanner />
       <div className="min-h-0 flex-1">
