@@ -68,6 +68,7 @@ async function build() {
 
   // Copy popup HTML
   await cp(join(srcDir, "popup/index.html"), join(distDir, "popup/index.html"));
+  await cp(join(srcDir, "popup/options.html"), join(distDir, "popup/options.html"));
 
   // Build CSS with Tailwind
   const cssInput = join(srcDir, "popup/styles/globals.css");

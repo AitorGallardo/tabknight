@@ -228,6 +228,16 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
   }
 });
 
+// First-run discoverability: once the user actually uses the shortcut, the
+// popup's hint banner never needs to show again.
+async function markCmdKHintDismissed(): Promise<void> {
+  try {
+    await chrome.storage.local.set({ cmdkHintDismissed: true });
+  } catch {
+    // Best-effort — the banner just stays around a bit longer.
+  }
+}
+
 // Cmd+K — toggle the tab-preview overlay on the active tab.
 chrome.commands.onCommand.addListener(async (command) => {
   if (command !== "open_tab_navigator") return;
@@ -239,10 +249,14 @@ chrome.commands.onCommand.addListener(async (command) => {
 
   if (activeTab?.id !== undefined) {
     const opened = await ensureAndTogglePreview(activeTab.id);
-    if (opened) return;
+    if (opened) {
+      await markCmdKHintDismissed();
+      return;
+    }
   }
 
   await openStandalonePreview(activeTab);
+  await markCmdKHintDismissed();
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
