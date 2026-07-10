@@ -104,6 +104,17 @@
   transform: scaleY(0.3) !important;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .tk-eq-bar {
+    animation: none !important;
+    transform: scaleY(0.6) !important;
+  }
+
+  .transition-colors {
+    transition-duration: 100ms;
+  }
+}
+
 /* Checkbox styling fix */
 input[type="checkbox"] {
   accent-color: hsl(var(--primary));

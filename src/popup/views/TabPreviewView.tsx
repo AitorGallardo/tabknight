@@ -109,6 +109,9 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   // Audio Playground (Cmd+K "audio" mode): tabs mode is the default, primary
   // surface; audio mode is entered via the ♪ pill or Tab key.
   const [mode, setMode] = useState<"tabs" | "audio">("tabs");
+  // Tabs-mode selection to restore when coming back from audio mode.
+  const rememberedTabId = useRef<number | null>(null);
+  const [announcement, setAnnouncement] = useState("");
   // Session-sticky membership — once a tab is audible/muted while the overlay
   // is open, its row stays until the overlay closes (it just flips to paused).
   const [audioTabIds, setAudioTabIds] = useState<Set<number>>(new Set());
@@ -293,7 +296,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
 
   useEffect(() => {
     setActiveIndex(0);
-  }, [query, mode]);
+  }, [query]);
 
   useEffect(() => {
     if (activeIndex > displayList.length - 1) {
@@ -404,6 +407,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
       });
 
       if (result.error === "autoplay-blocked") {
+        setAnnouncement("Playback blocked — click the tab to resume");
         setAutoplayHint((prev) => ({ ...prev, [tab.id]: true }));
         const existingTimer = hintTimers.current.get(tab.id);
         if (existingTimer) clearTimeout(existingTimer);
@@ -417,6 +421,8 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           });
         }, AUTOPLAY_HINT_MS);
         hintTimers.current.set(tab.id, timer);
+      } else {
+        setAnnouncement(result.playing ? `Playing ${tab.title}` : `Paused ${tab.title}`);
       }
     } catch {
       // Tab gone, or no content-script listener — leave UI state as-is.
@@ -426,6 +432,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   const toggleMute = useCallback((tab: NavigatorTab) => {
     const nextMuted = !tab.muted;
     setTabs((prev) => prev.map((t) => (t.id === tab.id ? { ...t, muted: nextMuted } : t)));
+    setAnnouncement(nextMuted ? `Muted ${tab.title}` : `Unmuted ${tab.title}`);
     void setTabMuted(tab.id, nextMuted).catch(() => {
       setTabs((prev) => prev.map((t) => (t.id === tab.id ? { ...t, muted: !nextMuted } : t)));
     });
@@ -440,6 +447,21 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     const tab = audioList[activeIndex];
     if (tab) toggleMute(tab);
   }, [audioList, activeIndex, toggleMute]);
+
+  const enterAudioMode = useCallback(() => {
+    rememberedTabId.current = orderedTabs[activeIndex]?.id ?? null;
+    setMode("audio");
+    setActiveIndex(0);
+    setAnnouncement(`Audio panel, ${playingCount} playing`);
+  }, [orderedTabs, activeIndex, playingCount]);
+
+  const enterTabsMode = useCallback(() => {
+    setMode("tabs");
+    const targetId = rememberedTabId.current;
+    const idx = targetId !== null ? orderedTabs.findIndex((tab) => tab.id === targetId) : -1;
+    setActiveIndex(idx >= 0 ? idx : 0);
+    setAnnouncement("All tabs");
+  }, [orderedTabs]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -462,16 +484,27 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
         void activate(displayList[activeIndex]);
       } else if (event.key === "Escape") {
         event.preventDefault();
-        void dismiss(true);
+        if (query !== "") {
+          setQuery("");
+          focusInputAtEnd();
+        } else if (mode === "audio") {
+          enterTabsMode();
+        } else {
+          void dismiss(true);
+        }
       } else if (event.key === "Tab") {
         event.preventDefault();
-        setMode((prev) => (prev === "tabs" ? "audio" : "tabs"));
+        if (mode === "tabs") enterAudioMode();
+        else enterTabsMode();
       } else if (mode === "audio" && query === "" && event.key === " ") {
         event.preventDefault();
         toggleSelectedPlay();
       } else if (mode === "audio" && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
         event.preventDefault();
         toggleSelectedMute();
+      } else if (mode === "audio" && query === "" && event.key === "Backspace") {
+        event.preventDefault();
+        enterTabsMode();
       } else if (!targetIsInput && event.key === "Backspace") {
         event.preventDefault();
         setQuery((prev) => prev.slice(0, -1));
@@ -485,7 +518,19 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
 
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [activate, activeIndex, dismiss, displayList, focusInputAtEnd, mode, query, toggleSelectedMute, toggleSelectedPlay]);
+  }, [
+    activate,
+    activeIndex,
+    dismiss,
+    displayList,
+    enterAudioMode,
+    enterTabsMode,
+    focusInputAtEnd,
+    mode,
+    query,
+    toggleSelectedMute,
+    toggleSelectedPlay,
+  ]);
 
   // Render the left rail with bucket headers (only when not searching).
   const showBuckets = query.trim().length === 0;
@@ -508,7 +553,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           <kbd className={kbdClass}>tab</kbd> tabs
         </span>
         <span className="flex items-center gap-1.5">
-          <kbd className={kbdClass}>esc</kbd> close
+          <kbd className={kbdClass}>esc</kbd> {query !== "" ? "clear" : "back"}
         </span>
       </div>
     ) : (
@@ -517,7 +562,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           <kbd className={kbdClass}>↵</kbd> Switch to tab
         </span>
         <span className="flex items-center gap-1.5">
-          <kbd className={kbdClass}>esc</kbd> Close
+          <kbd className={kbdClass}>esc</kbd> {query !== "" ? "Clear" : "Close"}
         </span>
         {playingCount > 0 && (
           <span className="flex items-center gap-1.5">
@@ -535,6 +580,9 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           '-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", system-ui, sans-serif',
       }}
     >
+      <div aria-live="polite" className="sr-only">
+        {announcement}
+      </div>
       {/* Left rail: search + grouped tab list */}
       <div className="flex min-h-0 flex-col border-r border-white/[0.07]">
         <div className="flex items-center gap-2 border-b border-white/[0.07] px-3 py-3">
@@ -552,13 +600,13 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           {(playingCount > 0 || mode === "audio") && (
             <button
               type="button"
-              onClick={() => setMode((prev) => (prev === "audio" ? "tabs" : "audio"))}
+              onClick={() => (mode === "audio" ? enterTabsMode() : enterAudioMode())}
               className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors ${
                 mode === "audio"
                   ? "bg-[#0a84ff]/20 text-[#5eaeff] ring-1 ring-[#0a84ff]/40"
                   : "bg-white/[0.08] text-white/70 hover:bg-white/[0.12]"
               }`}
-              aria-label="Toggle audio playground"
+              aria-label={`${playingCount} tab${playingCount === 1 ? "" : "s"} playing audio — toggle audio panel`}
               aria-pressed={mode === "audio"}
             >
               <span aria-hidden="true">♪</span>
@@ -575,7 +623,13 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           </button>
         </div>
 
-        <div ref={listRef} className="min-h-0 flex-1 space-y-0.5 overflow-auto px-2 py-2">
+        <div
+          ref={listRef}
+          role="listbox"
+          aria-label={mode === "audio" ? "Tabs playing audio" : "Open tabs"}
+          aria-activedescendant={activeTabItem ? `tk-row-${activeTabItem.id}` : undefined}
+          className="min-h-0 flex-1 space-y-0.5 overflow-auto px-2 py-2"
+        >
           {mode === "audio" ? (
             <>
               <div className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-white/30">
@@ -598,6 +652,9 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                 return (
                   <div
                     key={tab.id}
+                    id={`tk-row-${tab.id}`}
+                    role="option"
+                    aria-selected={active}
                     ref={(el) => {
                       itemRefs.current[index] = el;
                     }}
@@ -633,7 +690,14 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                     <span
                       role="button"
                       tabIndex={-1}
-                      aria-label={playing ? "Pause" : "Play"}
+                      aria-label={
+                        uncontrollable
+                          ? `Playback unavailable for ${tab.title}`
+                          : playing
+                            ? `Pause ${tab.title}`
+                            : `Play ${tab.title}`
+                      }
+                      aria-disabled={uncontrollable}
                       title={uncontrollable ? "mute only" : undefined}
                       onClick={(event) => {
                         event.stopPropagation();
@@ -648,7 +712,8 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                     <span
                       role="button"
                       tabIndex={-1}
-                      aria-label={tab.muted ? "Unmute" : "Mute"}
+                      aria-label={tab.muted ? `Unmute ${tab.title}` : `Mute ${tab.title}`}
+                      aria-pressed={tab.muted}
                       onClick={(event) => {
                         event.stopPropagation();
                         toggleMute(tab);
@@ -686,6 +751,9 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                         ref={(el) => {
                           itemRefs.current[index] = el;
                         }}
+                        id={`tk-row-${tab.id}`}
+                        role="option"
+                        aria-selected={active}
                         type="button"
                         onMouseEnter={() => setActiveIndex(index)}
                         onClick={() => void activate(tab)}
