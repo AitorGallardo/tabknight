@@ -8,6 +8,8 @@ import type {
   AudibleStateChangedMessage,
   ContentCard,
   MediaControlResult,
+  MediaStatusRequestMessage,
+  MediaStatusResult,
   TabThumbnail,
 } from "../lib/preview/types";
 import { AudioEq } from "../components/AudioEq";
@@ -209,6 +211,50 @@ function FreshnessChip({ capturedAt, now }: { capturedAt: number; now: number })
       <span className={`h-1.5 w-1.5 rounded-full ${fresh ? "bg-[#30d158]" : "bg-white/40"}`} />
       <span className={fresh ? undefined : "text-white/50"}>{relativeTime(capturedAt, now)}</span>
     </span>
+  );
+}
+
+/** mm:ss, or h:mm:ss past one hour. */
+function formatMediaTime(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
+  const ss = String(s).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+/** Audio-mode "now playing" block: elapsed/total + a thin progress bar, or an
+ *  elapsed-only "Live" row for streams (Infinity/unknown duration). Renders
+ *  nothing when the poll came back empty — no dead chrome. */
+function MediaNowPlaying({ tab, status }: { tab: NavigatorTab; status: MediaStatusResult }) {
+  if (!status.ok || !status.mediaCount) return null;
+  const playing = !!status.playing;
+  const currentTime = status.currentTime ?? 0;
+  const live = status.duration === undefined || !Number.isFinite(status.duration);
+  const pct = !live && status.duration ? Math.min(100, Math.max(0, (currentTime / status.duration) * 100)) : 0;
+
+  return (
+    <div className="mt-3">
+      <div className="text-[11px] text-white/45">
+        {playing ? "Playing" : "Paused"}
+        {tab.muted ? " · muted" : ""}
+      </div>
+      <div className="mt-1.5 flex items-center gap-2 text-[11px] text-white/45">
+        <span className="tabular-nums">{formatMediaTime(currentTime)}</span>
+        {live ? (
+          <span className="shrink-0">Live</span>
+        ) : (
+          <>
+            <div className="h-[3px] flex-1 rounded-full bg-white/15">
+              <div className="h-full rounded-full bg-white/70" style={{ width: `${pct}%` }} />
+            </div>
+            <span className="tabular-nums">{formatMediaTime(status.duration ?? 0)}</span>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -414,9 +460,17 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
         }
         setPlayback((prev) => {
           const existing = prev.get(tabId);
-          if (existing?.playing) return prev;
+          // A tab previously probed as having no controllable media (mediaCount
+          // === 0) just went audible again — clear the stale "known empty" mark
+          // so the play/pause button and the 1Hz status poll re-probe it.
+          const reviveKnownEmpty = existing?.mediaCount === 0;
+          if (existing?.playing && !reviveKnownEmpty) return prev;
           const next = new Map(prev);
-          next.set(tabId, { ...existing, playing: true });
+          next.set(tabId, {
+            ...existing,
+            playing: true,
+            ...(reviveKnownEmpty ? { mediaCount: undefined } : {}),
+          });
           return next;
         });
       } else if (audible === false && !pauseTimers.current.has(tabId)) {
@@ -527,6 +581,58 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
 
   const activeTabItem = displayList[activeIndex];
   const activeCard = activeTabItem ? cards.get(hashUrl(activeTabItem.url)) : undefined;
+
+  // "Now playing" media block (audio mode only): 1Hz poll of the selected
+  // row's playback position. Kept in its own state, separate from `playback`,
+  // so the 1Hz tick only re-renders what actually needs it.
+  const activeAudioTab = mode === "audio" ? activeTabItem : undefined;
+  const [mediaStatus, setMediaStatus] = useState<{ tabId: number; result: MediaStatusResult } | null>(null);
+  // A prior poll (or a play/pause attempt) already established this tab has
+  // no controllable media — stop bothering it every second.
+  const activeAudioKnownEmpty = activeAudioTab ? playback.get(activeAudioTab.id)?.mediaCount === 0 : false;
+
+  useEffect(() => {
+    if (!activeAudioTab || activeAudioKnownEmpty) {
+      setMediaStatus(null);
+      return;
+    }
+    const tabId = activeAudioTab.id;
+    let cancelled = false;
+
+    const poll = async () => {
+      let result: MediaStatusResult;
+      try {
+        result = (await chrome.runtime.sendMessage({
+          type: "MEDIA_STATUS_REQUEST",
+          tabId,
+        } as MediaStatusRequestMessage)) as MediaStatusResult;
+      } catch {
+        result = { ok: false, error: "unreachable" };
+      }
+      if (cancelled) return; // Selection moved on since this request was sent.
+      setMediaStatus({ tabId, result });
+
+      // Drift correction: the content script is the source of truth for
+      // playback state; reconcile if it disagrees with our local guess.
+      if (result.ok && typeof result.playing === "boolean") {
+        setPlayback((prev) => {
+          const existing = prev.get(tabId);
+          if (existing?.playing === result.playing && existing?.mediaCount === result.mediaCount) return prev;
+          const next = new Map(prev);
+          next.set(tabId, { playing: result.playing as boolean, mediaCount: result.mediaCount ?? existing?.mediaCount });
+          return next;
+        });
+      }
+    };
+
+    void poll();
+    const interval = setInterval(() => void poll(), 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAudioTab?.id, activeAudioKnownEmpty]);
 
   // One-time restore of the remembered selection once tabs are loaded. Falls
   // back "audio" -> "tabs" if the restored audio list would be empty, and
@@ -1347,6 +1453,10 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                 {activeTabItem.title}
               </h2>
               <div className="mt-1 truncate text-xs text-white/45">{activeTabItem.url}</div>
+
+              {activeAudioTab && mediaStatus?.tabId === activeAudioTab.id && (
+                <MediaNowPlaying tab={activeAudioTab} status={mediaStatus.result} />
+              )}
 
               {activeCard?.description && (
                 <p className="mt-4 text-sm leading-relaxed text-white/75">{activeCard.description}</p>

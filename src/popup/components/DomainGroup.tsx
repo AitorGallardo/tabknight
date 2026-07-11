@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "../lib/cn";
 import { TabItem } from "./TabItem";
@@ -9,7 +8,12 @@ interface DomainGroupProps {
   tabs: TabInfo[];
   selectedIds: Set<number>;
   onToggle: (id: number) => void;
-  defaultExpanded?: boolean;
+  expanded: boolean;
+  onToggleExpanded: () => void;
+  /** Flat cursor index of this group's first tab within the visible list. */
+  indexOffset: number;
+  cursorIndex: number;
+  registerItem: (index: number) => (el: HTMLElement | null) => void;
 }
 
 export function DomainGroup({
@@ -17,15 +21,18 @@ export function DomainGroup({
   tabs,
   selectedIds,
   onToggle,
-  defaultExpanded = true,
+  expanded,
+  onToggleExpanded,
+  indexOffset,
+  cursorIndex,
+  registerItem,
 }: DomainGroupProps) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
   const selectedCount = tabs.filter((t) => selectedIds.has(t.id)).length;
 
   return (
     <div className="border-b border-white/[0.07] last:border-b-0">
       <button
-        onClick={() => setExpanded(!expanded)}
+        onClick={onToggleExpanded}
         className={cn(
           "flex items-center gap-2 w-full px-2 py-1.5 text-left transition-colors",
           "hover:bg-white/[0.06]"
@@ -51,12 +58,14 @@ export function DomainGroup({
       </button>
       {expanded && (
         <div className="pl-2">
-          {tabs.map((tab) => (
+          {tabs.map((tab, i) => (
             <TabItem
               key={tab.id}
               tab={tab}
               selected={selectedIds.has(tab.id)}
               onToggle={onToggle}
+              cursor={indexOffset + i === cursorIndex}
+              itemRef={registerItem(indexOffset + i)}
             />
           ))}
         </div>

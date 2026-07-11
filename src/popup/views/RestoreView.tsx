@@ -4,6 +4,7 @@ import { Button } from "../components/ui/button";
 import { FolderPicker } from "../components/FolderPicker";
 import { StatusMessage } from "../components/StatusMessage";
 import { useBookmarks } from "../hooks/useBookmarks";
+import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { getBookmarksInFolder, openUrlsAsTabs } from "../lib/chrome-api";
 
 interface RestoreViewProps {
@@ -70,6 +71,11 @@ export function RestoreView({ onBack }: RestoreViewProps) {
       setOpening(false);
     }
   };
+
+  useKeyboardShortcuts({
+    onSave: !opening && bookmarks.length > 0 ? handleOpenAll : undefined,
+    onClose: onBack,
+  });
 
   const kbdClass = "rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70";
 

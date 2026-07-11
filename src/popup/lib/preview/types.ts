@@ -86,3 +86,34 @@ export interface AudibleStateChangedMessage {
   audible?: boolean;
   muted?: boolean;
 }
+
+/* ------------------------------ media status ------------------------------ */
+// A passive poll for the "now playing" block, routed the same way as media
+// control: overlay iframe -> background -> target tab's content script. Unlike
+// MEDIA_CONTROL_REQUEST, this never triggers a content-script injection — it's
+// cheap best-effort polling, not a user action.
+
+/** Sent from the background to a tab's content script to read its media state. */
+export interface MediaStatusMessage {
+  type: "MEDIA_STATUS";
+}
+
+/** Sent from the overlay iframe to the background to poll another tab's media state. */
+export interface MediaStatusRequestMessage {
+  type: "MEDIA_STATUS_REQUEST";
+  tabId: number;
+}
+
+/** Result of a media status poll, returned up through the same chain. */
+export interface MediaStatusResult {
+  ok: boolean;
+  playing?: boolean;
+  /** Elapsed playback time, in seconds. */
+  currentTime?: number;
+  /** Total duration, in seconds; omitted for live streams (Infinity duration). */
+  duration?: number;
+  /** Media elements found in the tab. */
+  mediaCount?: number;
+  /** "no-media" | message. */
+  error?: string;
+}

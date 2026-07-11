@@ -1,10 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { X, Copy, History, CheckCircle, RotateCcw } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { StatusMessage } from "../components/StatusMessage";
 import { TabItem } from "../components/TabItem";
 import { useTabSelection } from "../hooks/useTabSelection";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import { useRovingCursor } from "../hooks/useRovingCursor";
 import { closeTabs, openRecentlyClosed, getBookmarksInFolder, openUrlsAsTabs } from "../lib/chrome-api";
 import { copyToClipboard } from "../lib/utils";
 import type { SaveSummary, TabInfo } from "../types";
@@ -23,17 +24,21 @@ export function CloseTabsView({ saveSummary, onComplete }: CloseTabsViewProps) {
   const [error, setError] = useState<string | null>(null);
 
   // Convert save results to TabInfo for selection
-  const savedTabs: TabInfo[] = saveSummary.results
-    .filter((r) => r.success)
-    .map((r) => ({
-      id: r.tabId,
-      url: r.url,
-      title: r.title,
-      favIconUrl: r.favIconUrl,
-      pinned: false,
-      domain: "",
-      isDuplicate: false,
-    }));
+  const savedTabs: TabInfo[] = useMemo(
+    () =>
+      saveSummary.results
+        .filter((r) => r.success)
+        .map((r) => ({
+          id: r.tabId,
+          url: r.url,
+          title: r.title,
+          favIconUrl: r.favIconUrl,
+          pinned: false,
+          domain: "",
+          isDuplicate: false,
+        })),
+    [saveSummary.results]
+  );
 
   const { selectedIds, toggle, selectAll, deselectAll, selectedCount } =
     useTabSelection();
@@ -100,6 +105,21 @@ export function CloseTabsView({ saveSummary, onComplete }: CloseTabsViewProps) {
     onSave: closed ? () => window.close() : handleClose,
     onSelectAll: closed ? undefined : () => selectAll(savedTabs),
     onClose: handleSkip,
+  });
+
+  const handleCursorToggle = useCallback(
+    (index: number) => {
+      const tab = savedTabs[index];
+      if (tab) toggle(tab.id);
+    },
+    [savedTabs, toggle]
+  );
+
+  const cursorItems = useMemo(() => (closed ? [] : savedTabs), [closed, savedTabs]);
+
+  const { cursorIndex, listRef, registerItem } = useRovingCursor({
+    items: cursorItems,
+    onToggle: handleCursorToggle,
   });
 
   // Success screen after tabs are closed
@@ -184,13 +204,15 @@ export function CloseTabsView({ saveSummary, onComplete }: CloseTabsViewProps) {
       </div>
 
       {/* Tab List */}
-      <div className="min-h-0 flex-1 overflow-auto px-2 py-2 space-y-0.5">
-        {savedTabs.map((tab) => (
+      <div ref={listRef} className="min-h-0 flex-1 overflow-auto px-2 py-2 space-y-0.5">
+        {savedTabs.map((tab, i) => (
           <TabItem
             key={tab.id}
             tab={tab}
             selected={selectedIds.has(tab.id)}
             onToggle={toggle}
+            cursor={i === cursorIndex}
+            itemRef={registerItem(i)}
           />
         ))}
       </div>
@@ -248,6 +270,12 @@ export function CloseTabsView({ saveSummary, onComplete }: CloseTabsViewProps) {
         </div>
 
         <div className="flex items-center justify-end gap-4 text-[11px] text-white/50">
+          <span className="flex items-center gap-1.5">
+            <kbd className={kbdClass}>↑↓</kbd> Move
+          </span>
+          <span className="flex items-center gap-1.5">
+            <kbd className={kbdClass}>space</kbd> Select
+          </span>
           <span className="flex items-center gap-1.5">
             <kbd className={kbdClass}>↵</kbd> Close tabs
           </span>

@@ -7,14 +7,19 @@ interface TabItemProps {
   tab: TabInfo;
   selected: boolean;
   onToggle: (id: number) => void;
+  cursor?: boolean;
+  itemRef?: (el: HTMLLabelElement | null) => void;
 }
 
-export function TabItem({ tab, selected, onToggle }: TabItemProps) {
+export function TabItem({ tab, selected, onToggle, cursor = false, itemRef }: TabItemProps) {
   return (
     <label
+      ref={itemRef}
       className={cn(
         "flex w-full cursor-pointer items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 transition-colors duration-100",
-        selected ? "bg-[#0a84ff]/12 text-white/80" : "text-white/80 hover:bg-white/[0.06]"
+        selected ? "bg-[#0a84ff]/12 text-white/80" : "text-white/80 hover:bg-white/[0.06]",
+        cursor && "ring-1 ring-inset ring-white/15",
+        cursor && !selected && "bg-white/[0.06]"
       )}
     >
       <input
