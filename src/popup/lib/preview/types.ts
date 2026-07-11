@@ -116,4 +116,17 @@ export interface MediaStatusResult {
   mediaCount?: number;
   /** "no-media" | message. */
   error?: string;
+  /** Best-effort navigator.mediaSession.metadata read, cached in the background. */
+  session?: MediaSessionInfo;
+}
+
+/** navigator.mediaSession.metadata, read from a tab's MAIN world (content
+ *  scripts run isolated and can't see it) — see readMediaSession in the
+ *  background. */
+export interface MediaSessionInfo {
+  title?: string;
+  artist?: string;
+  album?: string;
+  /** Largest artwork entry's src, absolute. */
+  artworkUrl?: string;
 }

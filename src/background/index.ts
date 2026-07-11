@@ -12,6 +12,7 @@ import type {
   AudibleStateChangedMessage,
   ContentCard,
   MediaControlResult,
+  MediaSessionInfo,
   MediaStatusResult,
 } from "../popup/lib/preview/types";
 
@@ -112,12 +113,71 @@ async function forwardMediaControl(
   }
 }
 
+// Track title/artist/artwork live in navigator.mediaSession.metadata, which a
+// content script (isolated world) can't see — only a MAIN-world injection can.
+// Metadata rarely changes, so it's cached per tab and piggybacks on the 1Hz
+// status poll instead of re-injecting a script every tick.
+const MEDIA_SESSION_TTL = 5000;
+const mediaSessionCache = new Map<number, { info: MediaSessionInfo | null; at: number }>();
+
+async function readMediaSession(tabId: number): Promise<MediaSessionInfo | undefined> {
+  const cached = mediaSessionCache.get(tabId);
+  if (cached && Date.now() - cached.at < MEDIA_SESSION_TTL) return cached.info ?? undefined;
+
+  let info: MediaSessionInfo | null = null;
+  try {
+    const [injected] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: () => {
+        const m = navigator.mediaSession?.metadata;
+        if (!m) return null;
+        const art = [...(m.artwork ?? [])].sort((a, b) => {
+          const size = (s?: string) => parseInt(s?.split("x")[0] ?? "0", 10) || 0;
+          return size(b.sizes) - size(a.sizes);
+        })[0];
+        return {
+          title: m.title || undefined,
+          artist: m.artist || undefined,
+          album: m.album || undefined,
+          artworkUrl: art?.src || undefined,
+        };
+      },
+    });
+    // The result comes from the page's world — validate shapes on this side
+    // (a shadowed navigator.mediaSession could return arbitrary values).
+    const raw = injected?.result as Record<string, unknown> | null | undefined;
+    if (raw) {
+      const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+      const url = str(raw.artworkUrl);
+      info = {
+        title: str(raw.title),
+        artist: str(raw.artist),
+        album: str(raw.album),
+        artworkUrl: url && /^(https?:|data:image\/)/i.test(url) ? url : undefined,
+      };
+    }
+  } catch {
+    // Restricted page, no scripting access, or the tab navigated mid-call.
+    info = null;
+  }
+
+  mediaSessionCache.set(tabId, { info, at: Date.now() });
+  return info ?? undefined;
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  mediaSessionCache.delete(tabId);
+});
+
 // Passive poll for the "now playing" media block — unlike forwardMediaControl,
 // this never injects the content script: if it isn't there, the tab just has
 // no status yet, and the next poll tick will retry cheaply.
 async function forwardMediaStatus(tabId: number): Promise<MediaStatusResult> {
   try {
-    return await chrome.tabs.sendMessage(tabId, { type: "MEDIA_STATUS" });
+    const result = (await chrome.tabs.sendMessage(tabId, { type: "MEDIA_STATUS" })) as MediaStatusResult;
+    const session = await readMediaSession(tabId);
+    return session ? { ...result, session } : result;
   } catch (error) {
     return {
       ok: false,
