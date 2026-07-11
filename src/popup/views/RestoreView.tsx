@@ -1,11 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { FolderOpen, ExternalLink } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { FolderPicker } from "../components/FolderPicker";
 import { StatusMessage } from "../components/StatusMessage";
 import { useBookmarks } from "../hooks/useBookmarks";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
-import { getBookmarksInFolder, openUrlsAsTabs } from "../lib/chrome-api";
+import { useRovingCursor } from "../hooks/useRovingCursor";
+import { getBookmarksInFolder, openUrlAsTab, openUrlsAsTabs } from "../lib/chrome-api";
+import { cn } from "../lib/cn";
 
 interface RestoreViewProps {
   onBack: () => void;
@@ -72,8 +74,25 @@ export function RestoreView({ onBack }: RestoreViewProps) {
     }
   };
 
+  const handleCursorToggle = useCallback(() => {
+    // No selection concept here — Space has nothing to toggle.
+  }, []);
+
+  const { cursorIndex, listRef, registerItem } = useRovingCursor({
+    items: bookmarks,
+    onToggle: handleCursorToggle,
+    resetKey: selectedFolderId,
+  });
+
+  const handleOpenSelected = useCallback(() => {
+    const bookmark = bookmarks[cursorIndex];
+    if (!bookmark) return;
+    void openUrlAsTab(bookmark.url);
+  }, [bookmarks, cursorIndex]);
+
   useKeyboardShortcuts({
-    onSave: !opening && bookmarks.length > 0 ? handleOpenAll : undefined,
+    onSave: bookmarks.length > 0 ? handleOpenSelected : undefined,
+    onSaveWithModifier: !opening && bookmarks.length > 0 ? handleOpenAll : undefined,
     onClose: onBack,
   });
 
@@ -100,7 +119,7 @@ export function RestoreView({ onBack }: RestoreViewProps) {
       </div>
 
       {/* Bookmark List */}
-      <div className="min-h-0 flex-1 overflow-auto px-2 py-2 space-y-0.5">
+      <div ref={listRef} className="min-h-0 flex-1 overflow-auto px-2 py-2 space-y-0.5">
         {loadingBookmarks ? (
           <div className="flex flex-col items-center gap-2 py-12 text-xs text-white/45">Loading…</div>
         ) : bookmarks.length === 0 ? (
@@ -108,13 +127,17 @@ export function RestoreView({ onBack }: RestoreViewProps) {
             {pickedFolder ? "This folder is empty" : "Pick a folder to see its tabs"}
           </div>
         ) : (
-          bookmarks.map((bookmark) => (
+          bookmarks.map((bookmark, index) => (
             <a
               key={bookmark.id}
+              ref={registerItem(index)}
               href={bookmark.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-white/80 transition-colors duration-100 hover:bg-white/[0.06]"
+              className={cn(
+                "flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-white/80 transition-colors duration-100 hover:bg-white/[0.06]",
+                index === cursorIndex && "bg-white/[0.06] ring-1 ring-inset ring-white/15"
+              )}
             >
               <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md bg-white/[0.08] text-white/80">
                 <ExternalLink className="h-3.5 w-3.5" />
@@ -146,7 +169,13 @@ export function RestoreView({ onBack }: RestoreViewProps) {
 
         <div className="flex items-center justify-end gap-4 text-[11px] text-white/50">
           <span className="flex items-center gap-1.5">
-            <kbd className={kbdClass}>↵</kbd> Open all
+            <kbd className={kbdClass}>↑↓</kbd> Move
+          </span>
+          <span className="flex items-center gap-1.5">
+            <kbd className={kbdClass}>↵</kbd> Open
+          </span>
+          <span className="flex items-center gap-1.5">
+            <kbd className={kbdClass}>⌘↵</kbd> Open all
           </span>
           <span className="flex items-center gap-1.5">
             <kbd className={kbdClass}>esc</kbd> Back

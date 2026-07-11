@@ -202,6 +202,14 @@ export async function openUrlsAsTabs(urls: string[]): Promise<void> {
 }
 
 /**
+ * Open a single URL as a new active tab (matches clicking a
+ * `target="_blank"` link).
+ */
+export async function openUrlAsTab(url: string): Promise<void> {
+  await chrome.tabs.create({ url, active: true });
+}
+
+/**
  * Open a new tab from a free-form query (URL or search)
  */
 export async function openTabFromQuery(query: string): Promise<void> {

@@ -4,6 +4,24 @@ All notable changes to TabKnight are documented in this file.
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.26.0] - 2026-07-12
+
+### Added
+
+- Album artwork, track title and artist in the audio panel, read from the
+  page's Media Session (locally, via script injection — no network); artwork
+  becomes the preview hero for audio tabs, cross-fading on track changes.
+- Restore view: arrow keys move a cursor over bookmarks, Enter opens the
+  selected one, ⌘↵ opens all.
+- `bun run smoke` — end-to-end smoke test driving the built extension in a
+  real headless Chrome over the DevTools Protocol (overlay injects, options
+  page mounts, overlay closes).
+
+### Fixed
+
+- Media-session data from the page is type-validated and artwork URLs are
+  scheme-checked before rendering.
+
 ## [0.25.0] - 2026-07-11
 
 ### Added

@@ -2,6 +2,10 @@ import { useEffect, useCallback } from "react";
 
 interface ShortcutHandlers {
   onSave?: () => void;
+  /** Fired for Cmd/Ctrl+Enter instead of `onSave`. Consumers that don't pass
+   *  this keep the historical behavior of any Enter (modified or not)
+   *  triggering `onSave`. */
+  onSaveWithModifier?: () => void;
   onSelectAll?: () => void;
   onClose?: () => void;
 }
@@ -23,11 +27,22 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers): void {
         return;
       }
 
-      // Enter = Save
-      if (event.key === "Enter" && handlers.onSave) {
-        event.preventDefault();
-        handlers.onSave();
-        return;
+      // Enter = Save; Cmd/Ctrl+Enter = SaveWithModifier when a consumer
+      // distinguishes it. Falls back to onSave when it doesn't, preserving
+      // the historical behavior where any Enter triggered onSave regardless
+      // of modifier keys.
+      if (event.key === "Enter") {
+        const hasModifier = event.ctrlKey || event.metaKey;
+        if (hasModifier && handlers.onSaveWithModifier) {
+          event.preventDefault();
+          handlers.onSaveWithModifier();
+          return;
+        }
+        if (handlers.onSave) {
+          event.preventDefault();
+          handlers.onSave();
+          return;
+        }
       }
 
       // Ctrl+A or Cmd+A = Select All

@@ -234,10 +234,17 @@ function MediaNowPlaying({ tab, status }: { tab: NavigatorTab; status: MediaStat
   const currentTime = status.currentTime ?? 0;
   const live = status.duration === undefined || !Number.isFinite(status.duration);
   const pct = !live && status.duration ? Math.min(100, Math.max(0, (currentTime / status.duration) * 100)) : 0;
+  const session = status.session;
 
   return (
     <div className="mt-3">
-      <div className="text-[11px] text-white/45">
+      {session?.title && (
+        <div className="truncate text-[13px] font-medium text-white/90">
+          {session.title}
+          {session.artist && <span className="text-white/45"> · {session.artist}</span>}
+        </div>
+      )}
+      <div className={`text-[11px] text-white/45 ${session?.title ? "mt-1" : ""}`}>
         {playing ? "Playing" : "Paused"}
         {tab.muted ? " · muted" : ""}
       </div>
@@ -842,6 +849,27 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   const ogRejected = activeUrlHash !== null && ogDemoted.has(activeUrlHash);
   const ogImage = !ogRejected ? activeCard?.ogImage : undefined;
 
+  // Audio-mode-only top-priority hero: album art from the selected tab's
+  // mediaSession metadata, when the 1Hz poll has resolved one for it. Failed
+  // loads (hotlink protection) are tracked by URL so a rejected artwork
+  // doesn't flash back in on re-selection, same idiom as ogDemoted.
+  const [artworkFailed, setArtworkFailed] = useState<Set<string>>(new Set());
+  const audioArtworkUrl =
+    mode === "audio" && activeAudioTab && mediaStatus?.tabId === activeAudioTab.id
+      ? mediaStatus.result.session?.artworkUrl
+      : undefined;
+  const artworkUrl = audioArtworkUrl && !artworkFailed.has(audioArtworkUrl) ? audioArtworkUrl : undefined;
+
+  const handleArtworkError = useCallback(() => {
+    if (!audioArtworkUrl) return;
+    setArtworkFailed((prev) => {
+      if (prev.has(audioArtworkUrl)) return prev;
+      const next = new Set(prev);
+      next.add(audioArtworkUrl);
+      return next;
+    });
+  }, [audioArtworkUrl]);
+
   // Resolve the tier a Tier-2 thumbnail alone would render at (or null if
   // there's no thumbnail). Small captures still force "contain" outright
   // (upscaling a small image to cover the hero looks soft); otherwise "cover"
@@ -869,13 +897,15 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   const preferOgOverLegacyThumb =
     !!thumb && (thumb.width === undefined || thumb.width < LEGACY_THUMB_MIN_WIDTH) && !!ogImage;
 
-  const heroTier: "thumb-cover" | "thumb-contain" | "og-cover" | "typographic" = preferOgOverLegacyThumb
-    ? "og-cover"
-    : thumbTier
-      ? thumbTier
-      : ogImage
-        ? "og-cover"
-        : "typographic";
+  const heroTier: "artwork" | "thumb-cover" | "thumb-contain" | "og-cover" | "typographic" = artworkUrl
+    ? "artwork"
+    : preferOgOverLegacyThumb
+      ? "og-cover"
+      : thumbTier
+        ? thumbTier
+        : ogImage
+          ? "og-cover"
+          : "typographic";
 
   const handleOgImageLoad = useCallback(
     (event: SyntheticEvent<HTMLImageElement>) => {
@@ -1382,13 +1412,14 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col">
-            {/* Hero (Tier 2 screenshot → Tier 1 og:image → Tier 0.5 typographic
-                card). Fixed 16:10 aspect ratio (never flex-grown) so it never
-                needs to upscale a thumbnail to fill unpredictable flex space;
-                the metadata pane below takes whatever height remains and
-                scrolls. Keyed by tab + resolved tier so an upgrade, a
-                demotion, or a selection change all cross-fade in rather than
-                hard-swapping. */}
+            {/* Hero (audio-mode artwork → Tier 2 screenshot → Tier 1 og:image →
+                Tier 0.5 typographic card). Fixed 16:10 aspect ratio (never
+                flex-grown) so it never needs to upscale a thumbnail to fill
+                unpredictable flex space; the metadata pane below takes
+                whatever height remains and scrolls. Keyed by tab + resolved
+                tier (+ artwork URL, since a track change keeps the tier but
+                swaps the image) so an upgrade, a demotion, or a selection
+                change all cross-fade in rather than hard-swapping. */}
             <div
               ref={heroRef}
               className="relative overflow-hidden border-b border-white/[0.07]"
@@ -1400,7 +1431,29 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                     : "rgba(255,255,255,0.03)",
               }}
             >
-              <div key={`${activeTabItem.id}:${heroTier}`} className="tk-hero-fade h-full w-full">
+              <div
+                key={`${activeTabItem.id}:${heroTier}${heroTier === "artwork" ? `:${artworkUrl}` : ""}`}
+                className="tk-hero-fade h-full w-full"
+              >
+                {heroTier === "artwork" && artworkUrl && (
+                  <div className="relative h-full w-full">
+                    <img
+                      src={artworkUrl}
+                      alt=""
+                      className="absolute inset-0 h-full w-full scale-110 object-cover opacity-40 blur-2xl"
+                    />
+                    <div className="relative grid h-full w-full place-items-center p-8">
+                      <img
+                        src={artworkUrl}
+                        alt=""
+                        className="max-h-full max-w-full rounded-md object-contain shadow-[0_20px_60px_rgba(0,0,0,0.5)]"
+                        referrerPolicy="no-referrer"
+                        onError={handleArtworkError}
+                      />
+                    </div>
+                    <HeroTopScrim />
+                  </div>
+                )}
                 {heroTier === "thumb-cover" && thumb && (
                   <>
                     <img src={thumb.url} alt="" className="h-full w-full object-cover object-top" />
