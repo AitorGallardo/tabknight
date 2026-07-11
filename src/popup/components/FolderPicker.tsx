@@ -46,7 +46,7 @@ export function FolderPicker({
 
   if (loading) {
     return (
-      <div className="h-8 bg-muted/50 rounded animate-pulse" />
+      <div className="h-8 animate-pulse rounded-[10px] bg-white/[0.06]" />
     );
   }
 

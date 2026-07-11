@@ -12,7 +12,7 @@
 [![React 18](https://img.shields.io/badge/React_18-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.17.4-6366f1?style=for-the-badge)](./changelog.mdx)
+[![Version](https://img.shields.io/badge/version-0.24.0-6366f1?style=for-the-badge)](./CHANGELOG.md)
 
 </div>
 
@@ -48,9 +48,19 @@ TabKnight is keyboard-first by design — you rarely need the mouse.
 | --- | --- |
 | `↑` · `↓` | Move the selection |
 | `Enter` | Switch to the selected tab (or open the typed query) |
-| `Esc` | Close and return to your page |
+| `Tab` | Toggle Tabs ⇄ Audio mode (see below) |
+| `Esc` | Staged close — clears the query, then steps back from Audio mode, then closes |
 | _type…_ | Filter instantly — the search stays focused even if focus drifts |
 | `Backspace` | Edit the query without clicking back into the input |
+
+**Audio mode** (press `Tab`, or watch for the `♪ N playing` pill)
+
+| Shortcut | Action |
+| --- | --- |
+| `Space` | Play/pause the selected tab's media (when the query is empty) |
+| `←` · `→` | Mute/unmute the selected tab |
+| `Enter` | Switch to the selected tab |
+| `Tab` · `Esc` | Back to Tabs mode |
 
 **Popup — save flow**
 
@@ -74,13 +84,20 @@ Press `⌘ K` and a command palette blends in over the current page; you never g
 
 </div>
 
-- **Live fuzzy search** across every open tab in **every window** — matches title and URL.
-- **Tiered, never-blank previews.** Each result renders the best tier available *right now* and upgrades in place — no spinners, no empty panes:
+- **Live fuzzy search** across every open tab in **every window** — matches title and URL, with matches highlighted in the row.
+- **Featured rail.** When you haven't typed anything, "Recent" and "Most visited" (top 5 each, by this session's visit count) surface above the full list with a subtle blue tint — the tabs you're most likely to want, one glance away.
+- **Tiered, truthful previews.** Each result renders the best tier available *right now* and upgrades in place — no spinners, no empty panes, and nothing pretends to be higher fidelity than it is:
   - **Tier 0** — favicon + title (instant, always).
-  - **Tier 1** — rich card from page metadata (`og:image`, site name, description).
-  - **Tier 2** — a real pixel thumbnail of the page, captured in the background.
+  - **Tier 0.5** — a typographic card (title, description, favicon over a theme-color gradient) when there's no usable image yet — designed, not broken.
+  - **Tier 1** — rich card from page metadata (`og:image`, site name, description); logo-shaped or tiny `og:image`s are demoted back to the typographic card instead of showing an unrelated banner.
+  - **Tier 2** — a real pixel thumbnail of the page, captured in the background at up to 1600px, locked to a 16/10 hero and never upscaled — small captures render crisp at natural size over a blurred copy of themselves. A **freshness chip** ("just now / 2m ago / 1h ago") shows exactly how current it is.
+- **Row status glyphs** — audible, muted, pinned, sleeping, and other-window badges at a glance, so a list of 50+ tabs still reads at a glance.
 - **Recency-grouped list** when you're not searching, so your most-relevant tabs are one glance away.
 - **Auto-scroll** keeps the active row comfortably in view as you arrow through results.
+
+### 🎧 Audio playground
+
+Press `Tab` inside the overlay (or notice the `♪ N playing` pill) to switch into **Audio mode** — a live list of every background tab that's playing or muted audio, complete with a CSS-only equalizer. Mute/unmute any tab instantly, or play/pause its media without switching to it. `Space` toggles playback, `←`/`→` mute, `Enter` jumps to the tab.
 
 <table>
   <tr>
@@ -115,13 +132,19 @@ From the popup, treat a pile of tabs as a session:
 
 Chrome blocks extensions from injecting UI into its own internal pages (`chrome://extensions/`, `chrome://settings/`, …). On those — and on strict-CSP sites — TabKnight falls back to a temporary tab opened **in the same window**, using a blurred screenshot of your origin page as the backdrop (with halftone + vignette) so it still feels in-context. It self-cleans and returns focus to your page on `Esc`.
 
+### 🔐 Privacy-first, with real controls
+
+A first-run hint shows you the actual bound shortcut the first time you install (or offers to set one) and dismisses itself once you use it. The **options page** (right-click the toolbar icon → Options) shows live counts and the approximate size of your stored preview data, in plain language, with a one-click **Clear preview data** purge. See [`PRIVACY.md`](PRIVACY.md) for exactly what's collected and how it's capped.
+
 ## 🧠 Under the hood
 
 The capabilities that make it feel instant and reliable:
 
 - **In-page without the mess.** The overlay is a content-script **shadow-DOM host** that paints a blurred backdrop, with an **extension-origin `<iframe>`** hosting the React panel. The shadow root isolates it from arbitrary site CSS; the iframe origin gives the panel direct IndexedDB access. If the iframe can't load (strict CSP), it falls back to the standalone tab.
 - **Snapshot pipeline — page → background → IndexedDB.** Content scripts can't reach the extension DB directly, so the content script *harvests* lightweight content cards (title, `og:*`, theme color, a short text excerpt) and messages them to the background service worker, which persists them to **IndexedDB** keyed by a normalized-URL hash.
-- **Real thumbnails, politely captured.** The active tab is screenshotted via `chrome.tabs.captureVisibleTab`, downscaled to **WebP**, and stored as a blob. Captures are **throttled per-tab and serialized globally** to respect Chrome's rate limits, and the store is **LRU-evicted** so it never grows unbounded.
+- **Real thumbnails, politely captured.** The active tab is screenshotted via `chrome.tabs.captureVisibleTab`, downscaled to **WebP** at up to 1600px, and stored as a blob with its dimensions and capture time. Captures are **throttled per-tab and serialized globally** to respect Chrome's rate limits, and the store is **LRU-evicted** so it never grows unbounded.
+- **Favicon fallback chain.** Each row tries the tab's own `favIconUrl`, then Chrome's local favicon cache (via the `favicon` permission — no network request), then a letter tile — all local, no network.
+- **Per-session visit tracking.** The background worker counts tab activations for the current browser session (mirrored to `chrome.storage.session`) to power the "Most visited" featured section.
 - **Local-first & private.** Everything lives in IndexedDB under `unlimitedStorage`. No servers, no accounts, no telemetry.
 - **Predictable ranking.** Results use a fast, transparent heuristic — exact-title beats prefix beats substring, URL matches contribute, active/pinned tabs get a small boost, and ties resolve toward the current window.
 - **Clean React core.** State via React Context + hooks; every Chrome API call is wrapped async/await in a single `chrome-api.ts` layer.
@@ -137,9 +160,12 @@ Declared in [`public/manifest.json`](public/manifest.json) — each maps to a re
 | `activeTab` | Operate on the current page for overlay injection and capture |
 | `windows` | Focus the destination window during cross-window switching |
 | `scripting` | (Re)inject the content script on supported pages |
-| `storage` | Hand off context between the background worker and the fallback UI |
+| `storage` | Hand off context between the background worker and the fallback UI; session-scoped visit counts |
 | `unlimitedStorage` | Room for the IndexedDB snapshot + thumbnail store |
+| `favicon` | Read favicons from Chrome's local cache (no network request) for the fallback favicon tier |
 | `host_permissions: <all_urls>` | Run the overlay and capture previews on the sites you visit |
+
+See [`PRIVACY.md`](PRIVACY.md) for the full data-handling story — what's collected, where it lives, retention limits, and how to purge it.
 
 ## 🧰 Tech stack
 
@@ -183,24 +209,26 @@ tabknight/
 │  ├─ manifest.json            # MV3 manifest — permissions, command, icons
 │  └─ icons/                   # tabknight_icon.png (source) + icon16/32/48/128
 ├─ src/
-│  ├─ background/index.ts      # service worker: command routing, capture, badge, fallback
+│  ├─ background/index.ts      # service worker: command routing, capture, badge, visit counts, fallback
 │  ├─ content/index.ts         # shadow-DOM overlay host + content harvester + CSP fallback
 │  └─ popup/
-│     ├─ App.tsx               # view router (overlay / standalone / popup)
-│     ├─ views/                # TabPreview · TabNavigator · SaveTabs · CloseTabs · Restore
-│     ├─ components/           # tab list, domain groups, folder picker, shadcn/ui
-│     ├─ hooks/                # useTabs, useBookmarks, useTabSelection, useKeyboardShortcuts
+│     ├─ App.tsx               # view router (overlay / standalone / popup / options)
+│     ├─ views/                # TabPreview · TabNavigator · SaveTabs · CloseTabs · Restore · Options
+│     ├─ components/           # tab list, favicon, domain groups, folder picker, shadcn/ui
+│     ├─ hooks/                # useTabs, useBookmarks, useTabSelection, useListNavigation, useKeyboardShortcuts
 │     └─ lib/
 │        ├─ chrome-api.ts      # async wrappers around Chrome APIs
+│        ├─ rank.ts            # shared scoreTab ranking heuristic
 │        └─ preview/           # harvester · db (IndexedDB) · thumbnail · hash
 ├─ config/build.ts            # Bun build orchestration
 ├─ docs/screenshots/         # README imagery (overlay, previews, demo gif)
-└─ changelog.mdx              # release history
+├─ PRIVACY.md                 # what's collected, where it lives, how to purge it
+└─ CHANGELOG.md               # release history
 ```
 
 ## 🔢 Versioning
 
-Semantic versioning while in `0.x`. Every shipped fix or feature bumps the version in **both** `package.json` and `public/manifest.json` (kept in sync), in the same commit as the change. See [`changelog.mdx`](changelog.mdx).
+Semantic versioning while in `0.x`. Every shipped fix or feature bumps the version in **both** `package.json` and `public/manifest.json` (kept in sync), in the same commit as the change. See [`CHANGELOG.md`](CHANGELOG.md).
 
 ## 📄 License
 

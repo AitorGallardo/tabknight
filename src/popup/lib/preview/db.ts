@@ -147,6 +147,10 @@ export async function clearAllCards(): Promise<void> {
   await tx(CARDS_STORE, "readwrite", (store) => store.clear());
 }
 
+export function countCards(): Promise<number> {
+  return tx<number>(CARDS_STORE, "readonly", (store) => store.count());
+}
+
 /* ------------------------ thumbnails (Phase 2 stubs) ----------------------- */
 
 export async function putThumbnail(thumb: TabThumbnail): Promise<void> {
@@ -159,4 +163,12 @@ export async function getThumbnail(urlHash: string): Promise<TabThumbnail | unde
 
 export function pruneThumbnails(maxEntries: number = DEFAULT_MAX_THUMBS): Promise<void> {
   return pruneStore(THUMBS_STORE, maxEntries);
+}
+
+export async function clearAllThumbnails(): Promise<void> {
+  await tx(THUMBS_STORE, "readwrite", (store) => store.clear());
+}
+
+export function countThumbnails(): Promise<number> {
+  return tx<number>(THUMBS_STORE, "readonly", (store) => store.count());
 }

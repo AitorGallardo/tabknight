@@ -21,24 +21,30 @@ export function StatusMessage({
   }[type];
 
   const colors = {
-    success: "text-green-600 dark:text-green-500 bg-green-500/10",
-    error: "text-destructive bg-destructive/10",
-    warning: "text-yellow-600 dark:text-yellow-500 bg-yellow-500/10",
+    success: "border border-white/[0.07] bg-white/[0.04] text-white/80",
+    error: "border border-red-400/25 bg-red-500/10 text-red-200",
+    warning: "border border-amber-400/25 bg-amber-500/10 text-amber-200",
+  }[type];
+
+  const iconColors = {
+    success: "text-[#30d158]",
+    error: "text-red-200",
+    warning: "text-amber-200",
   }[type];
 
   return (
     <div
       className={cn(
-        "flex items-start gap-2 rounded p-3",
+        "flex items-start gap-2 rounded-[10px] px-3 py-2 text-xs",
         colors,
         className
       )}
     >
-      <Icon className="h-4 w-4 shrink-0 mt-0.5" />
+      <Icon className={cn("h-4 w-4 shrink-0 mt-0.5", iconColors)} />
       <div className="flex-1 min-w-0">
-        <p className="text-xs font-medium">{title}</p>
+        <p className="font-medium">{title}</p>
         {description && (
-          <p className="text-xs opacity-80 mt-0.5">{description}</p>
+          <p className="text-white/55 mt-0.5">{description}</p>
         )}
       </div>
     </div>

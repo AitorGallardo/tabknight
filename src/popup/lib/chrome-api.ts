@@ -57,6 +57,13 @@ export async function activateTab(tabId: number, windowId: number): Promise<void
 }
 
 /**
+ * Mute or unmute a tab
+ */
+export async function setTabMuted(tabId: number, muted: boolean): Promise<void> {
+  await chrome.tabs.update(tabId, { muted });
+}
+
+/**
  * Get bookmark tree
  */
 export async function getBookmarkTree(): Promise<chrome.bookmarks.BookmarkTreeNode[]> {

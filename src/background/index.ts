@@ -5,9 +5,14 @@
 //   on restricted pages where a content script can't be injected.
 
 import { updateBadgeCount } from "../popup/lib/chrome-api";
-import { putCard, pruneCards } from "../popup/lib/preview/db";
-import { captureActiveTabThumbnail } from "../popup/lib/preview/thumbnail";
-import type { ContentCard } from "../popup/lib/preview/types";
+import { getThumbnail, putCard, pruneCards } from "../popup/lib/preview/db";
+import { hashUrl } from "../popup/lib/preview/hash";
+import { captureActiveTabThumbnail, isCapturableUrl } from "../popup/lib/preview/thumbnail";
+import type {
+  AudibleStateChangedMessage,
+  ContentCard,
+  MediaControlResult,
+} from "../popup/lib/preview/types";
 
 async function injectContentScriptIntoOpenTabs(): Promise<void> {
   const tabs = await chrome.tabs.query({
@@ -30,11 +35,37 @@ async function injectContentScriptIntoOpenTabs(): Promise<void> {
   );
 }
 
+// Chrome doesn't expose a typed error for "no listener on the other end" — it
+// rejects sendMessage with one of these messages. Only these mean the content
+// script isn't there; anything else (e.g. the listener itself threw) should
+// not trigger a re-injection, or we'd end up with two overlay hosts on the
+// page.
+function isNoReceiverError(err: unknown): boolean {
+  const text = err instanceof Error ? err.message : String(err);
+  const lower = text.toLowerCase();
+  return (
+    lower.includes("receiving end does not exist") ||
+    lower.includes("could not establish connection")
+  );
+}
+
+// Chrome also rejects sendMessage with this when the listener was present and
+// ran (e.g. it called openPreviewOverlay synchronously) but the tab/frame
+// navigated or the port otherwise closed before the response made it back.
+// Unlike isNoReceiverError, this means the content script IS there — treat it
+// as success rather than falling back to a redundant standalone tab.
+function isPortClosedError(err: unknown): boolean {
+  const text = err instanceof Error ? err.message : String(err);
+  return text.toLowerCase().includes("the message port closed before a response was received");
+}
+
 async function ensureAndTogglePreview(tabId: number): Promise<boolean> {
   try {
     await chrome.tabs.sendMessage(tabId, { type: "PREVIEW_OVERLAY_TOGGLE" });
     return true;
-  } catch {
+  } catch (error) {
+    if (isPortClosedError(error)) return true;
+    if (!isNoReceiverError(error)) return false;
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
@@ -44,6 +75,38 @@ async function ensureAndTogglePreview(tabId: number): Promise<boolean> {
       return true;
     } catch {
       return false;
+    }
+  }
+}
+
+// Play/pause needs DOM access, so it's forwarded to the target tab's content
+// script, injecting it first if it hasn't run there yet (same retry pattern
+// as ensureAndTogglePreview).
+async function forwardMediaControl(
+  tabId: number,
+  action: string
+): Promise<MediaControlResult> {
+  const message = { type: "MEDIA_CONTROL", action };
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch (error) {
+    if (!isNoReceiverError(error)) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : "Unknown runtime error",
+      };
+    }
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["content/index.js"],
+      });
+      return await chrome.tabs.sendMessage(tabId, message);
+    } catch (retryError) {
+      return {
+        ok: false,
+        error: retryError instanceof Error ? retryError.message : "Unknown runtime error",
+      };
     }
   }
 }
@@ -91,23 +154,51 @@ async function openStandalonePreview(sourceTab?: chrome.tabs.Tab): Promise<void>
 // respect Chrome's captureVisibleTab rate limit.
 
 const MIN_CAPTURE_INTERVAL = 3000;
+// Opening the overlay bypasses the per-tab throttle, but only when the stored
+// thumbnail is this stale — repeatedly toggling Cmd+K should not spam captures.
+const OVERLAY_OPEN_STALE_THRESHOLD = 30000;
 const lastCaptureAt = new Map<number, number>();
-let captureInFlight = false;
+// captureVisibleTab captures the active tab of a given window, so mutual
+// exclusion only needs to be per-window — a global lock would starve every
+// window but the first that requests a capture at the same time.
+const captureInFlightWindows = new Set<number>();
 
-async function maybeCapture(tab: chrome.tabs.Tab | undefined): Promise<void> {
-  if (!tab?.id || !tab.active) return;
+async function maybeCapture(
+  tab: chrome.tabs.Tab | undefined,
+  opts?: { bypassThrottle?: boolean }
+): Promise<void> {
+  if (!tab?.id || !tab.active || tab.windowId === undefined) return;
 
   const now = Date.now();
-  if (now - (lastCaptureAt.get(tab.id) ?? 0) < MIN_CAPTURE_INTERVAL) return;
-  if (captureInFlight) return;
+  const throttled = now - (lastCaptureAt.get(tab.id) ?? 0) < MIN_CAPTURE_INTERVAL;
+  if (throttled && !opts?.bypassThrottle) return;
+  if (captureInFlightWindows.has(tab.windowId)) return;
 
   lastCaptureAt.set(tab.id, now);
-  captureInFlight = true;
+  captureInFlightWindows.add(tab.windowId);
   try {
     await captureActiveTabThumbnail(tab);
   } finally {
-    captureInFlight = false;
+    captureInFlightWindows.delete(tab.windowId);
   }
+}
+
+// The active tab is visible right as the overlay opens — freshen its
+// thumbnail so the "previous tab" the user is most likely to want next time
+// reflects what they just saw, not a stale capture from minutes ago.
+async function maybeCaptureOnOverlayOpen(tab: chrome.tabs.Tab | undefined): Promise<void> {
+  const url = tab?.url;
+  if (!isCapturableUrl(url)) return;
+
+  let bypassThrottle = true;
+  try {
+    const existing = await getThumbnail(hashUrl(url));
+    bypassThrottle = !existing || Date.now() - existing.capturedAt > OVERLAY_OPEN_STALE_THRESHOLD;
+  } catch {
+    // DB read failed — default to allowing the capture.
+  }
+
+  await maybeCapture(tab, { bypassThrottle });
 }
 
 // Captures are driven by the content script (PREVIEW_REQUEST_CAPTURE), which
@@ -115,6 +206,71 @@ async function maybeCapture(tab: chrome.tabs.Tab | undefined): Promise<void> {
 // show the top of the page, never a mid-scroll position.
 chrome.tabs.onRemoved.addListener((tabId) => {
   lastCaptureAt.delete(tabId);
+});
+
+/* -------------------------- per-session visit counts --------------------- */
+// Tracks how many times each tab has been navigated into (activated) during
+// this browser session. Mirrored to chrome.storage.session so the overlay can
+// read it directly, and so counts survive service-worker restarts within the
+// same browser session.
+
+const VISIT_COUNTS_KEY = "visitCounts";
+const visitCounts = new Map<number, number>();
+let visitCountsLoaded: Promise<void> | undefined;
+
+function loadVisitCounts(): Promise<void> {
+  if (!visitCountsLoaded) {
+    visitCountsLoaded = (async () => {
+      try {
+        const stored = await chrome.storage.session.get(VISIT_COUNTS_KEY);
+        const record = stored[VISIT_COUNTS_KEY] as Record<string, number> | undefined;
+        if (record) {
+          for (const [tabId, count] of Object.entries(record)) {
+            visitCounts.set(Number(tabId), count);
+          }
+        }
+      } catch {
+        // Best-effort — counts just start from zero this session.
+      }
+    })();
+  }
+  return visitCountsLoaded;
+}
+
+async function persistVisitCounts(): Promise<void> {
+  try {
+    const record: Record<string, number> = {};
+    for (const [tabId, count] of visitCounts) {
+      record[tabId] = count;
+    }
+    await chrome.storage.session.set({ [VISIT_COUNTS_KEY]: record });
+  } catch {
+    // Best-effort — storage.session write failed, in-memory count still holds.
+  }
+}
+
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  void (async () => {
+    try {
+      await loadVisitCounts();
+      visitCounts.set(activeInfo.tabId, (visitCounts.get(activeInfo.tabId) ?? 0) + 1);
+      await persistVisitCounts();
+    } catch {
+      // Best-effort.
+    }
+  })();
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void (async () => {
+    try {
+      await loadVisitCounts();
+      visitCounts.delete(tabId);
+      await persistVisitCounts();
+    } catch {
+      // Best-effort.
+    }
+  })();
 });
 
 // Update badge on startup
@@ -136,19 +292,51 @@ chrome.tabs.onRemoved.addListener(() => {
   updateBadgeCount();
 });
 
-chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   // Only update when URL changes
   if (changeInfo.url) {
     updateBadgeCount();
+  }
+
+  if (changeInfo.audible !== undefined || changeInfo.mutedInfo !== undefined) {
+    chrome.runtime
+      .sendMessage({
+        type: "AUDIBLE_STATE_CHANGED",
+        tabId,
+        audible: changeInfo.audible,
+        muted: changeInfo.mutedInfo?.muted,
+      } satisfies AudibleStateChangedMessage)
+      .catch(() => {
+        // No extension page is listening (overlay closed) — best-effort.
+      });
   }
 });
 
 // Update when window focus changes
 chrome.windows.onFocusChanged.addListener((windowId) => {
-  if (windowId !== chrome.windows.WINDOW_ID_NONE) {
-    updateBadgeCount();
-  }
+  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+
+  updateBadgeCount();
+
+  // The newly focused window's active tab is visible on screen — opportunistically
+  // refresh its thumbnail so multi-window usage stays fresh at zero user-visible cost.
+  void chrome.tabs
+    .query({ active: true, windowId })
+    .then(([tab]) => maybeCapture(tab))
+    .catch(() => {
+      // Best-effort — window may have closed between the event and the query.
+    });
 });
+
+// First-run discoverability: once the user actually uses the shortcut, the
+// popup's hint banner never needs to show again.
+async function markCmdKHintDismissed(): Promise<void> {
+  try {
+    await chrome.storage.local.set({ cmdkHintDismissed: true });
+  } catch {
+    // Best-effort — the banner just stays around a bit longer.
+  }
+}
 
 // Cmd+K — toggle the tab-preview overlay on the active tab.
 chrome.commands.onCommand.addListener(async (command) => {
@@ -159,12 +347,18 @@ chrome.commands.onCommand.addListener(async (command) => {
     currentWindow: true,
   });
 
+  void maybeCaptureOnOverlayOpen(activeTab);
+
   if (activeTab?.id !== undefined) {
     const opened = await ensureAndTogglePreview(activeTab.id);
-    if (opened) return;
+    if (opened) {
+      await markCmdKHintDismissed();
+      return;
+    }
   }
 
   await openStandalonePreview(activeTab);
+  await markCmdKHintDismissed();
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -192,6 +386,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === "PREVIEW_FALLBACK_STANDALONE") {
       await openStandalonePreview(sender.tab);
       sendResponse({ ok: true });
+      return;
+    }
+
+    if (message?.type === "MEDIA_CONTROL_REQUEST") {
+      const result = await forwardMediaControl(message.tabId, message.action);
+      sendResponse(result);
       return;
     }
   };

@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { X, Copy, History, CheckCircle, RotateCcw } from "lucide-react";
 import { Button } from "../components/ui/button";
-import { ScrollArea } from "../components/ui/scroll-area";
 import { StatusMessage } from "../components/StatusMessage";
 import { TabItem } from "../components/TabItem";
 import { useTabSelection } from "../hooks/useTabSelection";
@@ -107,12 +106,12 @@ export function CloseTabsView({ saveSummary, onComplete }: CloseTabsViewProps) {
   if (closed) {
     return (
       <div className="flex flex-col h-full items-center justify-center p-6 space-y-4">
-        <CheckCircle className="h-12 w-12 text-green-500" />
+        <CheckCircle className="h-12 w-12 text-[#30d158]" />
         <div className="text-center space-y-1">
-          <h2 className="text-sm font-semibold">
+          <h2 className="text-sm font-semibold text-white/90">
             Closed {closedCount} tab{closedCount !== 1 ? "s" : ""}
           </h2>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-xs text-white/55">
             Bookmarks saved to "{saveSummary.folderName}"
           </p>
         </div>
@@ -134,17 +133,19 @@ export function CloseTabsView({ saveSummary, onComplete }: CloseTabsViewProps) {
           </Button>
         </div>
 
-        <p className="text-[10px] text-muted-foreground">
+        <p className="text-[10px] text-white/45">
           Enter to close | Esc to close
         </p>
       </div>
     );
   }
 
+  const kbdClass = "rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70";
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="shrink-0 p-3 border-b border-border space-y-3">
+      <div className="shrink-0 border-b border-white/[0.07] px-3 py-3 space-y-3">
         <StatusMessage
           type={saveSummary.failed > 0 ? "warning" : "success"}
           title={`Saved ${saveSummary.succeeded} tab${saveSummary.succeeded !== 1 ? "s" : ""} to "${saveSummary.folderName}"`}
@@ -156,13 +157,14 @@ export function CloseTabsView({ saveSummary, onComplete }: CloseTabsViewProps) {
         />
 
         <div className="flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">
+          <span className="text-xs text-white/55">
             Close saved tabs?
           </span>
           <div className="flex gap-1">
             <Button
               variant="ghost"
               size="sm"
+              className="px-2 py-1 text-[11px]"
               onClick={() => selectAll(savedTabs)}
               disabled={selectedCount === savedTabs.length}
             >
@@ -171,6 +173,7 @@ export function CloseTabsView({ saveSummary, onComplete }: CloseTabsViewProps) {
             <Button
               variant="ghost"
               size="sm"
+              className="px-2 py-1 text-[11px]"
               onClick={deselectAll}
               disabled={selectedCount === 0}
             >
@@ -181,7 +184,7 @@ export function CloseTabsView({ saveSummary, onComplete }: CloseTabsViewProps) {
       </div>
 
       {/* Tab List */}
-      <ScrollArea className="flex-1 min-h-[200px] resize-y">
+      <div className="min-h-0 flex-1 overflow-auto px-2 py-2 space-y-0.5">
         {savedTabs.map((tab) => (
           <TabItem
             key={tab.id}
@@ -190,10 +193,10 @@ export function CloseTabsView({ saveSummary, onComplete }: CloseTabsViewProps) {
             onToggle={toggle}
           />
         ))}
-      </ScrollArea>
+      </div>
 
       {/* Footer */}
-      <div className="shrink-0 p-3 border-t border-border space-y-3">
+      <div className="shrink-0 border-t border-white/[0.07] px-3 py-3 space-y-3">
         {error && <StatusMessage type="error" title={error} />}
 
         <div className="flex gap-2">
@@ -242,6 +245,18 @@ export function CloseTabsView({ saveSummary, onComplete }: CloseTabsViewProps) {
               ? "Closing..."
               : `Close ${selectedCount} Tab${selectedCount !== 1 ? "s" : ""}`}
           </Button>
+        </div>
+
+        <div className="flex items-center justify-end gap-4 text-[11px] text-white/50">
+          <span className="flex items-center gap-1.5">
+            <kbd className={kbdClass}>↵</kbd> Close tabs
+          </span>
+          <span className="flex items-center gap-1.5">
+            <kbd className={kbdClass}>⌘A</kbd> Select all
+          </span>
+          <span className="flex items-center gap-1.5">
+            <kbd className={kbdClass}>esc</kbd> Keep open
+          </span>
         </div>
       </div>
     </div>

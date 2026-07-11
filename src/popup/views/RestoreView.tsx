@@ -1,7 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { FolderOpen, ExternalLink } from "lucide-react";
 import { Button } from "../components/ui/button";
-import { ScrollArea } from "../components/ui/scroll-area";
 import { FolderPicker } from "../components/FolderPicker";
 import { StatusMessage } from "../components/StatusMessage";
 import { useBookmarks } from "../hooks/useBookmarks";
@@ -25,9 +24,11 @@ export function RestoreView({ onBack }: RestoreViewProps) {
   const [loadingBookmarks, setLoadingBookmarks] = useState(false);
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pickedFolder, setPickedFolder] = useState(false);
 
   const handleFolderChange = async (folderId: string) => {
     setSelectedFolderId(folderId);
+    setPickedFolder(true);
     setLoadingBookmarks(true);
     setError(null);
 
@@ -48,6 +49,12 @@ export function RestoreView({ onBack }: RestoreViewProps) {
     }
   };
 
+  // The folder picker renders pre-selected with the default folder, so fetch
+  // its bookmarks up front instead of waiting for a manual selection.
+  useEffect(() => {
+    handleFolderChange(selectedFolderId);
+  }, []);
+
   const handleOpenAll = async () => {
     if (bookmarks.length === 0) return;
 
@@ -64,17 +71,19 @@ export function RestoreView({ onBack }: RestoreViewProps) {
     }
   };
 
+  const kbdClass = "rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70";
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="shrink-0 p-3 border-b border-border space-y-3">
+      <div className="shrink-0 p-3 border-b border-white/[0.07] space-y-3">
         <div className="flex items-center gap-2">
-          <FolderOpen className="h-4 w-4 text-primary" />
-          <h1 className="text-sm font-semibold">Restore Session</h1>
+          <FolderOpen className="h-4 w-4 text-[#5eaeff]" />
+          <h1 className="text-sm font-semibold text-white/90">Restore Session</h1>
         </div>
 
         <div className="space-y-2">
-          <label className="text-xs text-muted-foreground">Select folder</label>
+          <label className="text-[10px] uppercase tracking-[0.08em] text-white/40">Select folder</label>
           <FolderPicker
             folders={folders}
             value={selectedFolderId}
@@ -85,35 +94,33 @@ export function RestoreView({ onBack }: RestoreViewProps) {
       </div>
 
       {/* Bookmark List */}
-      <ScrollArea className="flex-1">
+      <div className="min-h-0 flex-1 overflow-auto px-2 py-2 space-y-0.5">
         {loadingBookmarks ? (
-          <div className="flex items-center justify-center h-32 text-xs text-muted-foreground">
-            Loading bookmarks...
-          </div>
+          <div className="flex flex-col items-center gap-2 py-12 text-xs text-white/45">Loading…</div>
         ) : bookmarks.length === 0 ? (
-          <div className="flex items-center justify-center h-32 text-xs text-muted-foreground">
-            Select a folder to see bookmarks
+          <div className="flex flex-col items-center gap-2 py-12 text-xs text-white/45">
+            {pickedFolder ? "This folder is empty" : "Pick a folder to see its tabs"}
           </div>
         ) : (
-          <div className="p-2">
-            {bookmarks.map((bookmark) => (
-              <a
-                key={bookmark.id}
-                href={bookmark.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-accent/50 rounded truncate"
-              >
-                <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground" />
-                <span className="truncate">{bookmark.title}</span>
-              </a>
-            ))}
-          </div>
+          bookmarks.map((bookmark) => (
+            <a
+              key={bookmark.id}
+              href={bookmark.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-white/80 transition-colors duration-100 hover:bg-white/[0.06]"
+            >
+              <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md bg-white/[0.08] text-white/80">
+                <ExternalLink className="h-3.5 w-3.5" />
+              </span>
+              <span className="truncate text-[13px] font-medium tracking-[-0.01em]">{bookmark.title}</span>
+            </a>
+          ))
         )}
-      </ScrollArea>
+      </div>
 
       {/* Footer */}
-      <div className="shrink-0 p-3 border-t border-border space-y-3">
+      <div className="shrink-0 p-3 border-t border-white/[0.07] space-y-3">
         {error && <StatusMessage type="error" title={error} />}
 
         <div className="flex gap-2">
@@ -129,6 +136,15 @@ export function RestoreView({ onBack }: RestoreViewProps) {
               ? "Opening..."
               : `Open ${bookmarks.length} Tab${bookmarks.length !== 1 ? "s" : ""}`}
           </Button>
+        </div>
+
+        <div className="flex items-center justify-end gap-4 text-[11px] text-white/50">
+          <span className="flex items-center gap-1.5">
+            <kbd className={kbdClass}>↵</kbd> Open all
+          </span>
+          <span className="flex items-center gap-1.5">
+            <kbd className={kbdClass}>esc</kbd> Back
+          </span>
         </div>
       </div>
     </div>

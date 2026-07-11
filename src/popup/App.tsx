@@ -4,6 +4,8 @@ import { TabPreviewView } from "./views/TabPreviewView";
 import { SaveTabsView } from "./views/SaveTabsView";
 import { CloseTabsView } from "./views/CloseTabsView";
 import { RestoreView } from "./views/RestoreView";
+import { OptionsView } from "./views/OptionsView";
+import { CmdKHintBanner } from "./components/CmdKHintBanner";
 import { POPUP_HEIGHT, POPUP_WIDTH } from "./lib/constants";
 import type { AppView, SaveSummary } from "./types";
 
@@ -18,6 +20,10 @@ export function App() {
   const searchParams = new URLSearchParams(window.location.search);
   const isStandaloneNavigator = searchParams.get("standalone") === "1";
   const isOverlay = searchParams.get("overlay") === "1";
+  // options.html is a distinct file (not a query param on index.html) so the
+  // options_ui manifest entry never depends on whether Chrome preserves a
+  // query string on that page.
+  const isOptions = window.location.pathname.endsWith("options.html");
   const contextId = searchParams.get("context");
   const [view, setView] = useState<AppView>("navigator");
   const [saveSummary, setSaveSummary] = useState<SaveSummary | null>(null);
@@ -72,6 +78,10 @@ export function App() {
     setSaveSummary(null);
   };
 
+  if (isOptions) {
+    return <OptionsView />;
+  }
+
   if (isOverlay) {
     return (
       <div className="h-screen w-screen overflow-hidden bg-transparent">
@@ -116,15 +126,23 @@ export function App() {
 
   return (
     <div
-      className="bg-background text-foreground overflow-hidden"
-      style={{ width: POPUP_WIDTH, height: POPUP_HEIGHT }}
+      className="flex flex-col overflow-hidden bg-[linear-gradient(180deg,rgba(28,28,30,0.86),rgba(20,20,22,0.84))] text-[#f5f5f7]"
+      style={{
+        width: POPUP_WIDTH,
+        height: POPUP_HEIGHT,
+        fontFamily:
+          '-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", system-ui, sans-serif',
+      }}
     >
-      {view === "navigator" && <TabNavigatorView onOpenSaveFlow={() => setView("save")} />}
-      {view === "save" && <SaveTabsView onSaveComplete={handleSaveComplete} />}
-      {view === "close" && saveSummary && (
-        <CloseTabsView saveSummary={saveSummary} onComplete={handleCloseComplete} />
-      )}
-      {view === "restore" && <RestoreView onBack={handleBackToSave} />}
+      <CmdKHintBanner />
+      <div className="min-h-0 flex-1">
+        {view === "navigator" && <TabNavigatorView onOpenSaveFlow={() => setView("save")} />}
+        {view === "save" && <SaveTabsView onSaveComplete={handleSaveComplete} />}
+        {view === "close" && saveSummary && (
+          <CloseTabsView saveSummary={saveSummary} onComplete={handleCloseComplete} />
+        )}
+        {view === "restore" && <RestoreView onBack={handleBackToSave} />}
+      </div>
     </div>
   );
 }

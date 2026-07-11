@@ -1,9 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Globe, Search, X } from "lucide-react";
-import { activateTab, getAllTabs } from "../lib/chrome-api";
+import type { ReactNode, SyntheticEvent } from "react";
+import { AppWindow, Moon, Music, Pause, Pin, Play, Search, Volume2, VolumeX, X } from "lucide-react";
+import { activateTab, getAllTabs, setTabMuted } from "../lib/chrome-api";
 import { getAllCards, getThumbnail } from "../lib/preview/db";
 import { hashUrl } from "../lib/preview/hash";
-import type { ContentCard } from "../lib/preview/types";
+import type {
+  AudibleStateChangedMessage,
+  ContentCard,
+  MediaControlResult,
+  TabThumbnail,
+} from "../lib/preview/types";
+import { AudioEq } from "../components/AudioEq";
+import { Favicon } from "../components/Favicon";
+import { scoreTab } from "../lib/rank";
+import { useListNavigation } from "../hooks/useListNavigation";
 
 interface TabPreviewViewProps {
   returnToTabId?: number | null;
@@ -20,6 +30,13 @@ function postToParent(type: "ready" | "close"): void {
   }
 }
 
+interface PreviewSessionState {
+  mode: "tabs" | "audio";
+  selectedTabId: number | null;
+}
+
+const PREVIEW_SESSION_KEY = "previewSession";
+
 interface NavigatorTab {
   id: number;
   windowId: number;
@@ -30,26 +47,55 @@ interface NavigatorTab {
   active: boolean;
   index: number;
   lastAccessed: number;
+  audible?: boolean;
+  muted?: boolean;
+  discarded?: boolean;
 }
+
+/** Per-tab UI playback state for the Audio Playground (audio mode). */
+interface PlaybackState {
+  playing: boolean;
+  /** Media elements last reported by MEDIA_CONTROL_REQUEST; 0 = uncontrollable. */
+  mediaCount?: number;
+}
+
+const PAUSE_DEBOUNCE_MS = 800;
+const HINT_MS = 2500;
+const THUMB_DEBOUNCE_MS = 70;
 
 const DAY = 24 * 60 * 60 * 1000;
 
-function scoreTab(tab: NavigatorTab, query: string): number {
-  const q = query.toLowerCase();
-  if (!q) {
-    return (tab.active ? 300 : 0) + (tab.pinned ? 30 : 0) + tab.lastAccessed / 1_000_000;
-  }
-  const title = tab.title.toLowerCase();
-  const url = tab.url.toLowerCase();
-  let score = 0;
-  if (title === q) score += 520;
-  if (title.startsWith(q)) score += 280;
-  if (title.includes(q)) score += 190;
-  if (url.includes(q)) score += 130;
-  if (tab.active) score += 20;
-  if (tab.pinned) score += 12;
-  return score;
-}
+/* -------------------------- preview-fidelity spec -------------------------- */
+const HERO_ASPECT = "16 / 10";
+const OG_MIN_WIDTH_PX = 200;
+const OG_SQUARE_LO = 0.8;
+const OG_SQUARE_HI = 1.25;
+const THUMB_UPSCALE_MAX = 1.15;
+/** Tier-2 thumbnails are only "cover"-cropped when their captured aspect is
+ *  close to the hero's 16/10 — otherwise a cover-crop reads as a zoomed-in
+ *  fragment, so we fall back to the letterboxed contain treatment. */
+const THUMB_ASPECT_TARGET = 1.6;
+const THUMB_ASPECT_TOLERANCE = 0.12;
+/** Thumbnails captured before width/height were recorded (or genuinely
+ *  low-res legacy captures) defer to a fresher og:image when one exists. */
+const LEGACY_THUMB_MIN_WIDTH = 900;
+const FRESH_TICK_MS = 30_000;
+const STALE_LABEL_MS = 3_600_000;
+const PREFETCH_RADIUS = 2;
+const MAX_ROW_GLYPHS = 2;
+const THUMB_CACHE_MAX = 12;
+const THUMB_PREFETCH_CONCURRENCY = 3;
+/** Approximate box height reserved before a row mounts (content-visibility). */
+const ROW_CONTAIN_SIZE = "0 36px";
+/** Rows with a domain subtitle (duplicate titles) render a second line — reserve more height. */
+const ROW_CONTAIN_SIZE_DUPLICATE = "0 44px";
+/** Only pay the content-visibility bookkeeping cost once lists get long. */
+const CONTENT_VISIBILITY_THRESHOLD = 60;
+
+/* --------------------------- featured rail spec ---------------------------- */
+const FEATURED_RECENT_COUNT = 5;
+const FEATURED_MOST_VISITED_COUNT = 5;
+const FEATURED_MIN_VISITS = 2;
 
 /** Group label for the left rail, à la Grok's "Today / Last 7 days / ...". */
 function bucketLabel(lastAccessed: number, now: number): string {
@@ -81,29 +127,185 @@ function domainOf(url: string): string {
   }
 }
 
+/**
+ * Highlight the first case-insensitive substring match of `query` in `text`.
+ * scoreTab (lib/rank.ts) only ever awards title points via `===`/`startsWith`/
+ * `includes` — all substring checks, never a fuzzy subsequence — so a single
+ * contiguous match is always the right span to highlight.
+ */
+function highlightTitle(text: string, query: string, active: boolean): ReactNode {
+  const q = query.trim();
+  if (!q) return text;
+  const idx = text.toLowerCase().indexOf(q.toLowerCase());
+  if (idx === -1) return text;
+  const before = text.slice(0, idx);
+  const match = text.slice(idx, idx + q.length);
+  const after = text.slice(idx + q.length);
+  const matchClass = active ? "rounded-[3px] bg-white/25 px-[1px] text-white" : "rounded-[3px] bg-white/15 px-[1px] text-white";
+  return (
+    <>
+      {before}
+      <span className={matchClass}>{match}</span>
+      {after}
+    </>
+  );
+}
+
+type RowGlyph = "audible" | "muted" | "pinned" | "discarded" | "other-window";
+
+/** Trailing status glyphs for a tabs-mode row, priority-ordered, capped. */
+function rowGlyphs(tab: NavigatorTab, currentWindowId: number | null): RowGlyph[] {
+  const candidates: RowGlyph[] = [];
+  if (tab.audible) candidates.push("audible");
+  if (tab.muted) candidates.push("muted");
+  if (tab.pinned) candidates.push("pinned");
+  if (tab.discarded) candidates.push("discarded");
+  if (currentWindowId !== null && tab.windowId !== currentWindowId) candidates.push("other-window");
+  return candidates.slice(0, MAX_ROW_GLYPHS);
+}
+
+function RowGlyphs({ tab, currentWindowId, active }: { tab: NavigatorTab; currentWindowId: number | null; active: boolean }) {
+  const glyphs = rowGlyphs(tab, currentWindowId);
+  if (glyphs.length === 0) return null;
+  const iconClass = active ? "h-3 w-3 text-white/75" : "h-3 w-3 text-white/35";
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      {glyphs.map((glyph) => {
+        switch (glyph) {
+          case "audible":
+            return (
+              <span key="audible" className="scale-[0.85]">
+                <AudioEq playing />
+              </span>
+            );
+          case "muted":
+            return <VolumeX key="muted" className={iconClass} />;
+          case "pinned":
+            return <Pin key="pinned" className={iconClass} />;
+          case "discarded":
+            return <Moon key="discarded" className={active ? "h-3 w-3 text-white/75" : "h-3 w-3 text-white/30"} />;
+          case "other-window":
+            return (
+              <span
+                key="other-window"
+                className={`grid place-items-center rounded-[3px] border px-1 text-[9px] leading-none ${
+                  active ? "border-white/25 text-white/75" : "border-white/15 text-white/40"
+                }`}
+              >
+                <AppWindow className="h-2.5 w-2.5" />
+              </span>
+            );
+        }
+      })}
+    </span>
+  );
+}
+
+/** Tier-2-only freshness chip: green dot + relative time while recent, dims after STALE_LABEL_MS. */
+function FreshnessChip({ capturedAt, now }: { capturedAt: number; now: number }) {
+  const fresh = now - capturedAt < STALE_LABEL_MS;
+  return (
+    <span className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-black/45 px-2 py-0.5 text-[10px] font-medium text-white/80 backdrop-blur-md ring-1 ring-white/10">
+      <span className={`h-1.5 w-1.5 rounded-full ${fresh ? "bg-[#30d158]" : "bg-white/40"}`} />
+      <span className={fresh ? undefined : "text-white/50"}>{relativeTime(capturedAt, now)}</span>
+    </span>
+  );
+}
+
+/** Top-edge scrim shared by every image-backed hero tier for text/chip contrast. */
+function HeroTopScrim() {
+  return <div className="pointer-events-none absolute inset-x-0 top-0 h-8 bg-gradient-to-b from-black/25 to-transparent" />;
+}
+
+/** Tier 0.5 — replaces the giant favicon fallback with a title/description card. */
+function HeroTypographicCard({ tab, card }: { tab: NavigatorTab; card?: ContentCard }) {
+  const themeColor = card?.themeColor;
+  const siteName = card?.siteName || domainOf(tab.url);
+  return (
+    <div
+      className="relative flex h-full flex-col justify-end overflow-hidden p-6"
+      style={{ background: `linear-gradient(155deg, ${themeColor || "#1c1c1e"}33 0%, rgba(10,10,12,0.6) 70%)` }}
+    >
+      <div
+        className="pointer-events-none absolute -left-16 -top-16 h-48 w-48 rounded-full blur-3xl"
+        style={{ background: `${themeColor || "#0a84ff"}22` }}
+      />
+      <div className="relative">
+        <div className="mb-3 flex items-center gap-2">
+          <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md bg-white/[0.08]">
+            <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={24} className="h-full w-full" />
+          </span>
+          <span className="truncate text-[12px] font-medium tracking-[-0.01em] text-white/55">{siteName}</span>
+        </div>
+        <h2 className="line-clamp-2 text-[22px] font-semibold leading-tight tracking-[-0.02em] text-white/95">
+          {tab.title}
+        </h2>
+        {card?.description && (
+          <p className="line-clamp-3 mt-2 text-[13px] leading-relaxed text-white/60">{card.description}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPreviewViewProps) {
   const [tabs, setTabs] = useState<NavigatorTab[]>([]);
   const [cards, setCards] = useState<Map<string, ContentCard>>(new Map());
+  // tabId -> times activated this session, maintained by the background;
+  // powers the "Most visited" featured rail section (best-effort read).
+  const [visitCounts, setVisitCounts] = useState<Record<string, number>>({});
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const [currentWindowId, setCurrentWindowId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const inputRef = useRef<HTMLInputElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
-  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const now = useMemo(() => Date.now(), [tabs]);
+  // Live clock, ticked every FRESH_TICK_MS — drives the freshness chip's
+  // "just now"/"Nm ago" label and the metadata pane's "captured …" text.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), FRESH_TICK_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  // Audio Playground (Cmd+K "audio" mode): tabs mode is the default, primary
+  // surface; audio mode is entered via the ♪ pill or Tab key.
+  const [mode, setMode] = useState<"tabs" | "audio">("tabs");
+  // Tabs-mode selection to restore when coming back from audio mode.
+  const rememberedTabId = useRef<number | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+  // Session-sticky membership — once a tab is audible/muted while the overlay
+  // is open, its row stays until the overlay closes (it just flips to paused).
+  const [audioTabIds, setAudioTabIds] = useState<Set<number>>(new Set());
+  const [playback, setPlayback] = useState<Map<number, PlaybackState>>(new Map());
+  const [rowHints, setRowHints] = useState<Record<number, string>>({});
+  const pauseTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+  const hintTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+  // Session-restored { mode, selectedTabId } read once on mount; applied after
+  // tabs finish loading. undefined = read still pending, null = nothing saved.
+  // Kept as state (not a ref) so the restore effect re-runs if the async read
+  // resolves after tabs have already loaded.
+  const [savedSession, setSavedSession] = useState<PreviewSessionState | null | undefined>(undefined);
+  const restoredSelectionRef = useRef(false);
+  // Gates the write-through effect until the one-time restore has applied, so
+  // it can't persist a stale pre-restore selection in the same commit.
+  const [persistReady, setPersistReady] = useState(false);
 
   useEffect(() => {
     const load = async () => {
       setLoading(true);
-      const [allTabs, currentWindow, allCards] = await Promise.all([
+      const [allTabs, currentWindow, allCards, visitCountsResult] = await Promise.all([
         getAllTabs(),
         chrome.windows.getCurrent(),
         getAllCards().catch(() => [] as ContentCard[]),
+        chrome.storage.session
+          .get("visitCounts")
+          .then((result) => (result as { visitCounts?: Record<string, number> }).visitCounts ?? {})
+          .catch(() => ({}) as Record<string, number>),
       ]);
 
       setCurrentWindowId(currentWindow.id ?? null);
       setCards(new Map(allCards.map((card) => [card.urlHash, card])));
+      setVisitCounts(visitCountsResult);
 
       // Hide TabKnight's own preview page and the tab the user is currently on,
       // so the previously-visited tab (sorted by lastAccessed) ranks first.
@@ -129,6 +331,9 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           active: tab.active || false,
           index: tab.index || 0,
           lastAccessed: (tab as chrome.tabs.Tab & { lastAccessed?: number }).lastAccessed || 0,
+          audible: tab.audible || false,
+          muted: tab.mutedInfo?.muted || false,
+          discarded: tab.discarded || false,
         }));
 
       setTabs(normalized);
@@ -139,13 +344,110 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   }, []);
 
   useEffect(() => {
+    (async () => {
+      try {
+        const result = await chrome.storage.session.get(PREVIEW_SESSION_KEY);
+        const saved = (result[PREVIEW_SESSION_KEY] as PreviewSessionState | undefined) ?? null;
+        setSavedSession(saved);
+        if (saved?.mode === "audio") setMode("audio");
+      } catch {
+        // No session storage access — start fresh.
+        setSavedSession(null);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
     inputRef.current?.focus();
     // Tell the host content script the iframe rendered (cancels its CSP fallback).
     if (overlay) postToParent("ready");
   }, [overlay]);
 
-  // Flat, ranked list of selectable tabs (keyboard navigation indexes into this).
-  const orderedTabs = useMemo(() => {
+  // Grow the sticky audio set / seed playback state whenever a tab becomes
+  // audible or muted (initial load, or the live-update effect below).
+  useEffect(() => {
+    let idsChanged = false;
+    const nextIds = new Set(audioTabIds);
+    let stateChanged = false;
+    const nextPlayback = new Map(playback);
+    for (const tab of tabs) {
+      if (!tab.audible && !tab.muted) continue;
+      if (!nextIds.has(tab.id)) {
+        nextIds.add(tab.id);
+        idsChanged = true;
+      }
+      if (!nextPlayback.has(tab.id)) {
+        nextPlayback.set(tab.id, { playing: !!tab.audible });
+        stateChanged = true;
+      }
+    }
+    if (idsChanged) setAudioTabIds(nextIds);
+    if (stateChanged) setPlayback(nextPlayback);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabs]);
+
+  // Live updates from the background: keep tab audible/muted flags fresh and
+  // debounce audible->false so transient flaps don't flicker a row to paused.
+  useEffect(() => {
+    const onMessage = (message: unknown) => {
+      const msg = message as Partial<AudibleStateChangedMessage>;
+      if (!msg || msg.type !== "AUDIBLE_STATE_CHANGED" || typeof msg.tabId !== "number") return;
+      const { tabId, audible, muted } = msg;
+
+      setTabs((prev) => {
+        const idx = prev.findIndex((t) => t.id === tabId);
+        if (idx === -1) return prev; // Unknown tab (e.g. created after load) — ignore.
+        const current = prev[idx];
+        const nextAudible = audible ?? current.audible;
+        const nextMuted = muted ?? current.muted;
+        if (current.audible === nextAudible && current.muted === nextMuted) return prev;
+        const next = prev.slice();
+        next[idx] = { ...current, audible: nextAudible, muted: nextMuted };
+        return next;
+      });
+
+      if (audible === true) {
+        const timer = pauseTimers.current.get(tabId);
+        if (timer) {
+          clearTimeout(timer);
+          pauseTimers.current.delete(tabId);
+        }
+        setPlayback((prev) => {
+          const existing = prev.get(tabId);
+          if (existing?.playing) return prev;
+          const next = new Map(prev);
+          next.set(tabId, { ...existing, playing: true });
+          return next;
+        });
+      } else if (audible === false && !pauseTimers.current.has(tabId)) {
+        const timer = setTimeout(() => {
+          pauseTimers.current.delete(tabId);
+          setPlayback((prev) => {
+            const existing = prev.get(tabId);
+            if (!existing || existing.playing === false) return prev;
+            const next = new Map(prev);
+            next.set(tabId, { ...existing, playing: false });
+            return next;
+          });
+        }, PAUSE_DEBOUNCE_MS);
+        pauseTimers.current.set(tabId, timer);
+      }
+    };
+
+    chrome.runtime.onMessage.addListener(onMessage);
+    return () => {
+      chrome.runtime.onMessage.removeListener(onMessage);
+      for (const timer of pauseTimers.current.values()) clearTimeout(timer);
+      pauseTimers.current.clear();
+      for (const timer of hintTimers.current.values()) clearTimeout(timer);
+      hintTimers.current.clear();
+    };
+  }, []);
+
+  // Flat, base-ranked list (unfeatured). This is the whole list when
+  // searching; when not searching it's the source the featured sections and
+  // bucketed remainder below are carved out of.
+  const rankedTabs = useMemo(() => {
     const q = query.trim();
     return tabs
       .map((tab) => ({ tab, score: scoreTab(tab, q) }))
@@ -163,42 +465,328 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
       .map(({ tab }) => tab);
   }, [tabs, query, currentWindowId]);
 
-  useEffect(() => {
-    setActiveIndex(0);
-  }, [query]);
+  // Featured rail sections (tabs mode, no active search only): "Recent" is the
+  // top N of rankedTabs (already lastAccessed-desc when unsearched); "Most
+  // visited" is carved from what's left, ranked by session visit count, with
+  // a floor so a single stray visit doesn't qualify. Both are disjoint from
+  // each other and from the bucketed remainder below.
+  const featured = useMemo(() => {
+    if (query.trim() !== "") return null;
+    const recent = rankedTabs.slice(0, FEATURED_RECENT_COUNT);
+    const recentIds = new Set(recent.map((tab) => tab.id));
+    const afterRecent = rankedTabs.filter((tab) => !recentIds.has(tab.id));
+    const mostVisited = afterRecent
+      .map((tab) => ({ tab, count: visitCounts[tab.id] ?? 0 }))
+      .filter(({ count }) => count >= FEATURED_MIN_VISITS)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, FEATURED_MOST_VISITED_COUNT)
+      .map(({ tab }) => tab);
+    const mostVisitedIds = new Set(mostVisited.map((tab) => tab.id));
+    const remainder = afterRecent.filter((tab) => !mostVisitedIds.has(tab.id));
+    return { recent, mostVisited, remainder };
+  }, [rankedTabs, query, visitCounts]);
 
-  useEffect(() => {
-    if (activeIndex > orderedTabs.length - 1) {
-      setActiveIndex(Math.max(0, orderedTabs.length - 1));
-    }
-  }, [orderedTabs.length, activeIndex]);
+  // Single ordered array driving both rendering and keyboard nav: featured
+  // Recent rows, then Most visited, then the bucketed remainder — exactly the
+  // visual order. Falls back to the flat ranked list while searching.
+  const orderedTabs = useMemo(
+    () => (featured ? [...featured.recent, ...featured.mostVisited, ...featured.remainder] : rankedTabs),
+    [featured, rankedTabs]
+  );
+  const featuredRecentCount = featured?.recent.length ?? 0;
+  const featuredMostVisitedCount = featured?.mostVisited.length ?? 0;
 
-  const activeTabItem = orderedTabs[activeIndex];
+  // Rows sharing a title (e.g. several GitHub PRs, several Google Docs) get a
+  // domain hint appended so they stay distinguishable at a glance.
+  const duplicateTitleCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const tab of orderedTabs) counts.set(tab.title, (counts.get(tab.title) ?? 0) + 1);
+    return counts;
+  }, [orderedTabs]);
+
+  // Audio Playground rail — sticky-audio tabs, filtered by the same search query.
+  const audioList = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return tabs
+      .filter((tab) => audioTabIds.has(tab.id))
+      .filter((tab) => !q || tab.title.toLowerCase().includes(q) || tab.url.toLowerCase().includes(q))
+      .sort((a, b) => b.lastAccessed - a.lastAccessed);
+  }, [tabs, audioTabIds, query]);
+
+  const playingCount = useMemo(
+    () =>
+      tabs.reduce(
+        (count, tab) => count + (audioTabIds.has(tab.id) && !!playback.get(tab.id)?.playing && !tab.muted ? 1 : 0),
+        0
+      ),
+    [tabs, audioTabIds, playback]
+  );
+
+  // Keyboard navigation indexes into whichever list is on screen.
+  const displayList = mode === "audio" ? audioList : orderedTabs;
+
+  const activeTabItem = displayList[activeIndex];
   const activeCard = activeTabItem ? cards.get(hashUrl(activeTabItem.url)) : undefined;
 
-  // Lazily load the pixel thumbnail for the focused tab (Tier 2). We fetch one
-  // blob at a time and revoke its object URL when the selection changes.
-  const [thumb, setThumb] = useState<{ url: string; capturedAt: number } | null>(null);
+  // One-time restore of the remembered selection once tabs are loaded. Falls
+  // back "audio" -> "tabs" if the restored audio list would be empty, and
+  // falls back to the existing default ranking if the remembered tab is gone.
+  useEffect(() => {
+    if (loading || savedSession === undefined || restoredSelectionRef.current) return;
+    restoredSelectionRef.current = true;
+    const saved = savedSession;
+    if (!saved) {
+      setPersistReady(true);
+      return;
+    }
+
+    let effectiveMode = saved.mode;
+    if (effectiveMode === "audio" && !tabs.some((tab) => tab.audible || tab.muted)) {
+      effectiveMode = "tabs";
+      setMode("tabs");
+    }
+
+    if (saved.selectedTabId !== null) {
+      if (effectiveMode === "audio") {
+        const list = tabs
+          .filter((tab) => tab.audible || tab.muted)
+          .sort((a, b) => b.lastAccessed - a.lastAccessed);
+        const idx = list.findIndex((tab) => tab.id === saved.selectedTabId);
+        if (idx >= 0) setActiveIndex(idx);
+      } else {
+        const idx = orderedTabs.findIndex((tab) => tab.id === saved.selectedTabId);
+        if (idx >= 0) setActiveIndex(idx);
+      }
+    }
+    setPersistReady(true);
+  }, [loading, tabs, orderedTabs, savedSession]);
+
+  // Write-through: persist { mode, selectedTabId } so the next Cmd+K open
+  // (fresh iframe) can restore where the user left off. Gated until the
+  // one-time restore above has applied, so it never overwrites the saved
+  // session with a stale pre-restore selection.
+  useEffect(() => {
+    if (loading || !persistReady) return;
+    const selectedTabId = activeTabItem?.id ?? null;
+    chrome.storage.session.set({ [PREVIEW_SESSION_KEY]: { mode, selectedTabId } }).catch(() => {});
+  }, [mode, activeTabItem?.id, loading, persistReady]);
+
+  // Lazily load the pixel thumbnail for the focused tab (Tier 2). Debounced by
+  // a dwell period so arrow-key mashing doesn't fire an IndexedDB read per
+  // keypress; the previously-displayed thumbnail stays put (never blank)
+  // while the user rests on a new row and the fetch resolves.
+  const [thumb, setThumb] = useState<{ url: string; capturedAt: number; width?: number; height?: number } | null>(
+    null
+  );
+  const thumbRef = useRef<{ url: string; capturedAt: number; width?: number; height?: number } | null>(null);
+  const thumbRequestRef = useRef(0);
+  useEffect(() => {
+    thumbRef.current = thumb;
+  }, [thumb]);
+  useEffect(() => {
+    return () => {
+      if (thumbRef.current) URL.revokeObjectURL(thumbRef.current.url);
+    };
+  }, []);
+
+  // Neighbor-prefetch cache (perceived fluidity): holds raw TabThumbnail
+  // records (never object URLs) keyed by urlHash, small LRU. Only the
+  // currently-displayed thumbnail ever gets a live object URL — created on
+  // demand and revoked exactly where `thumb` is replaced/unmounted above —
+  // so eviction here never has to worry about revoking anything.
+  const thumbCacheRef = useRef<Map<string, TabThumbnail>>(new Map());
+  const thumbInFlightRef = useRef<Set<string>>(new Set());
+
+  const cacheGetThumb = useCallback((urlHash: string): TabThumbnail | undefined => {
+    const cache = thumbCacheRef.current;
+    const rec = cache.get(urlHash);
+    if (rec) {
+      // Bump recency for LRU.
+      cache.delete(urlHash);
+      cache.set(urlHash, rec);
+    }
+    return rec;
+  }, []);
+
+  const cacheSetThumb = useCallback((urlHash: string, rec: TabThumbnail) => {
+    const cache = thumbCacheRef.current;
+    cache.delete(urlHash);
+    cache.set(urlHash, rec);
+    if (cache.size > THUMB_CACHE_MAX) {
+      const oldestKey = cache.keys().next().value;
+      if (oldestKey !== undefined) cache.delete(oldestKey);
+    }
+  }, []);
+
   const activeUrl = activeTabItem?.url;
   useEffect(() => {
-    let cancelled = false;
-    let objectUrl: string | null = null;
-    setThumb(null);
-    if (!activeUrl) return;
+    // Clear synchronously on selection change so the tiered fallback
+    // (og:image -> favicon) shows for the new tab instead of the previous
+    // tab's stale screenshot while the debounced fetch is pending.
+    setThumb((prev) => {
+      if (prev) URL.revokeObjectURL(prev.url);
+      return null;
+    });
 
-    getThumbnail(hashUrl(activeUrl))
-      .then((record) => {
-        if (cancelled || !record) return;
-        objectUrl = URL.createObjectURL(record.blob);
-        setThumb({ url: objectUrl, capturedAt: record.capturedAt });
-      })
-      .catch(() => {});
+    if (!activeUrl) {
+      return;
+    }
+
+    const urlHash = hashUrl(activeUrl);
+    const requestId = ++thumbRequestRef.current;
+
+    const applyRecord = (record: TabThumbnail | undefined) => {
+      if (thumbRequestRef.current !== requestId) return; // superseded by a newer selection
+      setThumb((prev) => {
+        if (prev) URL.revokeObjectURL(prev.url);
+        return record
+          ? {
+              url: URL.createObjectURL(record.blob),
+              capturedAt: record.capturedAt,
+              width: record.width,
+              height: record.height,
+            }
+          : null;
+      });
+    };
+
+    // Consult the neighbor-prefetch cache before ever hitting IndexedDB —
+    // this is the fast path when the user arrows onto a row we already
+    // warmed. Cache hits skip the debounce too, since there's no I/O to wait
+    // out; only a real DB read needs the dwell period.
+    const cached = cacheGetThumb(urlHash);
+    if (cached) {
+      applyRecord(cached);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      getThumbnail(urlHash)
+        .then((record) => {
+          if (record) cacheSetThumb(urlHash, record);
+          applyRecord(record);
+        })
+        .catch(() => {});
+    }, THUMB_DEBOUNCE_MS);
+
+    return () => clearTimeout(timer);
+  }, [activeUrl, cacheGetThumb, cacheSetThumb]);
+
+  // Neighbor prefetch: warm the thumbnail cache for the rows just off-screen
+  // around the current selection so arrowing onto them is instant. Capped at
+  // THUMB_PREFETCH_CONCURRENCY in-flight reads via a simple Set; skips
+  // anything already cached or already being fetched.
+  useEffect(() => {
+    if (displayList.length === 0) return;
+    const offsets: number[] = [];
+    for (let d = 1; d <= PREFETCH_RADIUS; d++) offsets.push(-d, d);
+    const queue: string[] = [];
+    for (const offset of offsets) {
+      const neighbor = displayList[activeIndex + offset];
+      if (!neighbor) continue;
+      const neighborHash = hashUrl(neighbor.url);
+      if (thumbCacheRef.current.has(neighborHash) || thumbInFlightRef.current.has(neighborHash)) continue;
+      queue.push(neighborHash);
+    }
+    if (queue.length === 0) return;
+
+    let cancelled = false;
+    const runNext = () => {
+      if (cancelled) return;
+      if (thumbInFlightRef.current.size >= THUMB_PREFETCH_CONCURRENCY) return;
+      const nextHash = queue.shift();
+      if (!nextHash) return;
+      thumbInFlightRef.current.add(nextHash);
+      getThumbnail(nextHash)
+        .then((record) => {
+          if (record) cacheSetThumb(nextHash, record);
+        })
+        .catch(() => {})
+        .finally(() => {
+          thumbInFlightRef.current.delete(nextHash);
+          runNext();
+        });
+    };
+    for (let i = 0; i < THUMB_PREFETCH_CONCURRENCY; i++) runNext();
 
     return () => {
       cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [activeUrl]);
+  }, [displayList, activeIndex, cacheSetThumb]);
+
+  // Hero box width, measured live — used to decide whether a Tier-2
+  // thumbnail would need to be upscaled to fill the pane (see THUMB_UPSCALE_MAX).
+  const heroRef = useRef<HTMLDivElement>(null);
+  const [heroBoxWidth, setHeroBoxWidth] = useState(600);
+  useEffect(() => {
+    const el = heroRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (width) setHeroBoxWidth(width);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // og:image demotions persist across re-selection (keyed by urlHash) so a
+  // rejected og:image doesn't flash back in if the user tabs away and back.
+  const [ogDemoted, setOgDemoted] = useState<Set<string>>(new Set());
+  const activeUrlHash = activeTabItem ? hashUrl(activeTabItem.url) : null;
+  const ogRejected = activeUrlHash !== null && ogDemoted.has(activeUrlHash);
+  const ogImage = !ogRejected ? activeCard?.ogImage : undefined;
+
+  // Resolve the tier a Tier-2 thumbnail alone would render at (or null if
+  // there's no thumbnail). Small captures still force "contain" outright
+  // (upscaling a small image to cover the hero looks soft); otherwise "cover"
+  // is only used when the capture's aspect is close to the hero's 16/10 —
+  // a mismatched aspect crops a chunk out and reads as a zoomed-in fragment,
+  // so it falls back to the letterboxed contain treatment instead. Missing
+  // width/height (older records) keeps the pre-existing cover-by-default
+  // behavior.
+  const thumbTier: "thumb-cover" | "thumb-contain" | null = !thumb
+    ? null
+    : thumb.width === undefined
+      ? "thumb-cover"
+      : thumb.width < heroBoxWidth * THUMB_UPSCALE_MAX
+        ? "thumb-contain"
+        : thumb.height === undefined
+          ? "thumb-cover"
+          : Math.abs(thumb.width / thumb.height - THUMB_ASPECT_TARGET) / THUMB_ASPECT_TARGET <= THUMB_ASPECT_TOLERANCE
+            ? "thumb-cover"
+            : "thumb-contain";
+
+  // Legacy/low-res thumbnails (captured before width/height were recorded
+  // reliably, or genuinely small) defer to a fresher og:image when one is
+  // available and hasn't been demoted; the thumbnail remains the fallback if
+  // the og:image later fails its own quality check onLoad.
+  const preferOgOverLegacyThumb =
+    !!thumb && (thumb.width === undefined || thumb.width < LEGACY_THUMB_MIN_WIDTH) && !!ogImage;
+
+  const heroTier: "thumb-cover" | "thumb-contain" | "og-cover" | "typographic" = preferOgOverLegacyThumb
+    ? "og-cover"
+    : thumbTier
+      ? thumbTier
+      : ogImage
+        ? "og-cover"
+        : "typographic";
+
+  const handleOgImageLoad = useCallback(
+    (event: SyntheticEvent<HTMLImageElement>) => {
+      if (!activeUrlHash) return;
+      const img = event.currentTarget;
+      const ratio = img.naturalHeight ? img.naturalWidth / img.naturalHeight : 1;
+      const shouldDemote = img.naturalWidth < OG_MIN_WIDTH_PX || (ratio >= OG_SQUARE_LO && ratio <= OG_SQUARE_HI);
+      if (!shouldDemote) return;
+      setOgDemoted((prev) => {
+        if (prev.has(activeUrlHash)) return prev;
+        const next = new Set(prev);
+        next.add(activeUrlHash);
+        return next;
+      });
+    },
+    [activeUrlHash]
+  );
 
   const focusInputAtEnd = useCallback(() => {
     const input = inputRef.current;
@@ -207,19 +795,6 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     const caret = input.value.length;
     input.setSelectionRange(caret, caret);
   }, []);
-
-  useEffect(() => {
-    const list = listRef.current;
-    const item = itemRefs.current[activeIndex];
-    if (!list || !item) return;
-    const itemTop = item.offsetTop;
-    const itemBottom = itemTop + item.offsetHeight;
-    if (itemTop < list.scrollTop + 8) {
-      list.scrollTop = Math.max(0, itemTop - 8);
-    } else if (itemBottom > list.scrollTop + list.clientHeight - 8) {
-      list.scrollTop = Math.min(list.scrollHeight - list.clientHeight, itemBottom - list.clientHeight + 8);
-    }
-  }, [activeIndex, orderedTabs.length]);
 
   const dismiss = useCallback(
     async (restoreOrigin: boolean) => {
@@ -260,46 +835,193 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     [dismiss]
   );
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      const targetIsInput =
-        target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+  const showRowHint = useCallback((tabId: number, message: string) => {
+    setRowHints((prev) => ({ ...prev, [tabId]: message }));
+    const existingTimer = hintTimers.current.get(tabId);
+    if (existingTimer) clearTimeout(existingTimer);
+    const timer = setTimeout(() => {
+      hintTimers.current.delete(tabId);
+      setRowHints((prev) => {
+        if (!prev[tabId]) return prev;
+        const next = { ...prev };
+        delete next[tabId];
+        return next;
+      });
+    }, HINT_MS);
+    hintTimers.current.set(tabId, timer);
+  }, []);
 
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const sendPlayToggle = useCallback(
+    async (tab: NavigatorTab) => {
+      try {
+        const result = (await chrome.runtime.sendMessage({
+          type: "MEDIA_CONTROL_REQUEST",
+          tabId: tab.id,
+          action: "toggle-play",
+        })) as MediaControlResult;
 
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setActiveIndex((prev) => Math.min(prev + 1, Math.max(0, orderedTabs.length - 1)));
-        focusInputAtEnd();
-      } else if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setActiveIndex((prev) => Math.max(prev - 1, 0));
-        focusInputAtEnd();
-      } else if (event.key === "Enter") {
-        event.preventDefault();
-        void activate(orderedTabs[activeIndex]);
-      } else if (event.key === "Escape") {
-        event.preventDefault();
-        void dismiss(true);
-      } else if (!targetIsInput && event.key === "Backspace") {
-        event.preventDefault();
-        setQuery((prev) => prev.slice(0, -1));
-        focusInputAtEnd();
-      } else if (!targetIsInput && event.key.length === 1 && !event.repeat) {
-        event.preventDefault();
-        setQuery((prev) => prev + event.key);
-        focusInputAtEnd();
+        setPlayback((prev) => {
+          const existing = prev.get(tab.id);
+          const next = new Map(prev);
+          next.set(tab.id, { playing: result.playing ?? existing?.playing ?? false, mediaCount: result.mediaCount });
+          return next;
+        });
+
+        if (result.error === "autoplay-blocked") {
+          setAnnouncement("Playback blocked — click the tab to resume");
+          showRowHint(tab.id, "click the tab to resume");
+        } else if (result.ok === false) {
+          setAnnouncement(`Couldn't reach ${tab.title}`);
+          showRowHint(tab.id, "couldn't reach tab");
+        } else {
+          setAnnouncement(result.playing ? `Playing ${tab.title}` : `Paused ${tab.title}`);
+        }
+      } catch {
+        setAnnouncement(`Couldn't reach ${tab.title}`);
+        showRowHint(tab.id, "couldn't reach tab");
       }
-    };
+    },
+    [showRowHint]
+  );
 
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [activate, activeIndex, dismiss, focusInputAtEnd, orderedTabs]);
+  const toggleMute = useCallback(
+    (tab: NavigatorTab) => {
+      const nextMuted = !tab.muted;
+      setTabs((prev) => prev.map((t) => (t.id === tab.id ? { ...t, muted: nextMuted } : t)));
+      setAnnouncement(nextMuted ? `Muted ${tab.title}` : `Unmuted ${tab.title}`);
+      void setTabMuted(tab.id, nextMuted).catch(() => {
+        setTabs((prev) => prev.map((t) => (t.id === tab.id ? { ...t, muted: !nextMuted } : t)));
+        setAnnouncement(`Couldn't reach ${tab.title}`);
+        showRowHint(tab.id, "couldn't reach tab");
+      });
+    },
+    [showRowHint]
+  );
+
+  const toggleSelectedPlay = useCallback(() => {
+    const tab = audioList[activeIndex];
+    if (tab) void sendPlayToggle(tab);
+  }, [audioList, activeIndex, sendPlayToggle]);
+
+  const toggleSelectedMute = useCallback(() => {
+    const tab = audioList[activeIndex];
+    if (tab) toggleMute(tab);
+  }, [audioList, activeIndex, toggleMute]);
+
+  const enterAudioMode = useCallback(() => {
+    rememberedTabId.current = orderedTabs[activeIndex]?.id ?? null;
+    setMode("audio");
+    setActiveIndex(0);
+    setAnnouncement(`Audio panel, ${playingCount} playing`);
+  }, [orderedTabs, activeIndex, playingCount]);
+
+  const enterTabsMode = useCallback(() => {
+    setMode("tabs");
+    const targetId = rememberedTabId.current;
+    const idx = targetId !== null ? orderedTabs.findIndex((tab) => tab.id === targetId) : -1;
+    setActiveIndex(idx >= 0 ? idx : 0);
+    setAnnouncement("All tabs");
+  }, [orderedTabs]);
+
+  const onActivate = useCallback(
+    (index: number) => {
+      void activate(displayList[index]);
+    },
+    [displayList, activate]
+  );
+
+  const onEscape = useCallback(() => {
+    if (query !== "") {
+      setQuery("");
+      focusInputAtEnd();
+    } else if (mode === "audio") {
+      enterTabsMode();
+    } else {
+      void dismiss(true);
+    }
+  }, [query, mode, enterTabsMode, dismiss, focusInputAtEnd]);
+
+  // Tab mode-cycle, Space play/pause, ArrowLeft/Right mute, and audio-mode
+  // Backspace-to-back all live outside the generic list-navigation machinery.
+  const preKeyDown = useCallback(
+    (event: KeyboardEvent): boolean => {
+      if (event.key === "Tab") {
+        event.preventDefault();
+        if (mode === "tabs") enterAudioMode();
+        else enterTabsMode();
+        return true;
+      }
+      if (mode === "audio" && query === "" && event.key === " ") {
+        event.preventDefault();
+        toggleSelectedPlay();
+        return true;
+      }
+      if (mode === "audio" && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+        event.preventDefault();
+        toggleSelectedMute();
+        return true;
+      }
+      if (mode === "audio" && query === "" && event.key === "Backspace") {
+        event.preventDefault();
+        enterTabsMode();
+        return true;
+      }
+      return false;
+    },
+    [mode, query, enterAudioMode, enterTabsMode, toggleSelectedPlay, toggleSelectedMute]
+  );
+
+  const { listRef, registerItem } = useListNavigation({
+    itemCount: displayList.length,
+    query,
+    setQuery,
+    activeIndex,
+    setActiveIndex,
+    focusInputAtEnd,
+    onActivate,
+    onEscape,
+    preKeyDown,
+  });
 
   // Render the left rail with bucket headers (only when not searching).
   const showBuckets = query.trim().length === 0;
   let lastBucket = "";
+
+  const kbdClass = "rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70";
+  const footer =
+    mode === "audio" ? (
+      <div className="flex items-center justify-end gap-4 border-t border-white/[0.07] px-6 py-3 text-[11px] text-white/50">
+        <span className="flex items-center gap-1.5">
+          <kbd className={kbdClass}>space</kbd> play/pause
+        </span>
+        <span className="flex items-center gap-1.5">
+          <kbd className={kbdClass}>←/→</kbd> mute
+        </span>
+        <span className="flex items-center gap-1.5">
+          <kbd className={kbdClass}>↵</kbd> Switch to tab
+        </span>
+        <span className="flex items-center gap-1.5">
+          <kbd className={kbdClass}>tab</kbd> tabs
+        </span>
+        <span className="flex items-center gap-1.5">
+          <kbd className={kbdClass}>esc</kbd> {query !== "" ? "clear" : "back"}
+        </span>
+      </div>
+    ) : (
+      <div className="flex items-center justify-end gap-4 border-t border-white/[0.07] px-6 py-3 text-[11px] text-white/50">
+        <span className="flex items-center gap-1.5">
+          <kbd className={kbdClass}>↵</kbd> Switch to tab
+        </span>
+        <span className="flex items-center gap-1.5">
+          <kbd className={kbdClass}>esc</kbd> {query !== "" ? "Clear" : "Close"}
+        </span>
+        {playingCount > 0 && (
+          <span className="flex items-center gap-1.5">
+            <kbd className={kbdClass}>tab</kbd> ♪
+          </span>
+        )}
+      </div>
+    );
 
   return (
     <div
@@ -309,6 +1031,9 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           '-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", system-ui, sans-serif',
       }}
     >
+      <div aria-live="polite" className="sr-only">
+        {announcement}
+      </div>
       {/* Left rail: search + grouped tab list */}
       <div className="flex min-h-0 flex-col border-r border-white/[0.07]">
         <div className="flex items-center gap-2 border-b border-white/[0.07] px-3 py-3">
@@ -323,104 +1048,297 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
             spellCheck={false}
             aria-label="Search tabs"
           />
+          {(playingCount > 0 || mode === "audio") && (
+            <button
+              type="button"
+              onClick={() => (mode === "audio" ? enterTabsMode() : enterAudioMode())}
+              className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors ${
+                mode === "audio"
+                  ? "bg-[#0a84ff]/20 text-[#5eaeff] ring-1 ring-[#0a84ff]/40"
+                  : "bg-white/[0.08] text-white/70 hover:bg-white/[0.12]"
+              }`}
+              aria-label={`${playingCount} tab${playingCount === 1 ? "" : "s"} playing audio — toggle audio panel`}
+              aria-pressed={mode === "audio"}
+            >
+              <span aria-hidden="true">♪</span>
+              {playingCount} playing
+            </button>
+          )}
           <button
             type="button"
             onClick={() => void dismiss(true)}
-            className="grid h-7 w-7 place-items-center rounded-full bg-white/[0.06] text-white/55 transition-colors hover:bg-white/[0.12] hover:text-white/80"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-white/55 transition-colors hover:bg-white/[0.12] hover:text-white/80"
             aria-label="Close preview"
           >
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
 
-        <div ref={listRef} className="min-h-0 flex-1 space-y-0.5 overflow-auto px-2 py-2">
-          {loading && <div className="px-3 py-2 text-xs text-white/60">Loading tabs…</div>}
-          {!loading && orderedTabs.length === 0 && (
-            <div className="px-3 py-2 text-xs text-white/55">No matching tabs</div>
-          )}
+        <div
+          ref={listRef}
+          role="listbox"
+          aria-label={mode === "audio" ? "Tabs playing audio" : "Open tabs"}
+          aria-activedescendant={activeTabItem ? `tk-row-${activeTabItem.id}` : undefined}
+          className="min-h-0 flex-1 overflow-auto px-2 py-2"
+        >
+          <div key={mode} className="tk-mode-fade space-y-0.5">
+          {mode === "audio" ? (
+            <>
+              <div className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-white/30">
+                Now Playing
+              </div>
+              {audioList.length === 0 && (
+                <div className="flex flex-col items-center gap-2 px-4 py-12 text-center">
+                  <Music className="h-6 w-6 text-white/25" />
+                  <div className="text-xs text-white/45">No tabs are playing audio</div>
+                  <div className="text-[11px] text-white/30">press Tab to go back</div>
+                </div>
+              )}
+              {audioList.map((tab, index) => {
+                const active = index === activeIndex;
+                const state = playback.get(tab.id);
+                const playing = !!state?.playing && !tab.muted;
+                const uncontrollable = state?.mediaCount === 0;
+                const hint = rowHints[tab.id];
 
-          {!loading &&
-            orderedTabs.map((tab, index) => {
-              const bucket = bucketLabel(tab.lastAccessed, now);
-              const header = showBuckets && bucket !== lastBucket ? bucket : null;
-              if (header) lastBucket = bucket;
-              const active = index === activeIndex;
-
-              return (
-                <div key={tab.id}>
-                  {header && (
-                    <div className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-white/30">
-                      {header}
-                    </div>
-                  )}
-                  <button
-                    ref={(el) => {
-                      itemRefs.current[index] = el;
-                    }}
-                    type="button"
+                return (
+                  <div
+                    key={tab.id}
+                    id={`tk-row-${tab.id}`}
+                    role="option"
+                    aria-selected={active}
+                    ref={registerItem(index)}
                     onMouseEnter={() => setActiveIndex(index)}
-                    onClick={() => void activate(tab)}
-                    className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${
+                    style={audioList.length > CONTENT_VISIBILITY_THRESHOLD ? { contentVisibility: "auto", containIntrinsicSize: ROW_CONTAIN_SIZE } : undefined}
+                    className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 transition-colors duration-100 ${
                       active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]"
-                    }`}
+                    } ${tab.muted ? "opacity-60" : ""}`}
                   >
+                    <button
+                      type="button"
+                      onClick={() => void activate(tab)}
+                      className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                    >
+                      <span
+                        className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${
+                          active ? "bg-white/20" : "bg-white/[0.08] text-white/80"
+                        }`}
+                      >
+                        <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={24} className="h-full w-full" />
+                      </span>
+                      <AudioEq playing={playing} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">
+                          {highlightTitle(tab.title, query, active)}
+                        </span>
+                        <span className={`block truncate text-[11px] ${active ? "text-white/70" : "text-white/45"}`}>
+                          {hint ?? domainOf(tab.url)}
+                        </span>
+                      </span>
+                    </button>
                     <span
-                      className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${
-                        active ? "bg-white/20" : "bg-white/[0.08] text-white/80"
+                      role="button"
+                      tabIndex={-1}
+                      aria-label={
+                        uncontrollable
+                          ? `Playback unavailable for ${tab.title}`
+                          : playing
+                            ? `Pause ${tab.title}`
+                            : `Play ${tab.title}`
+                      }
+                      aria-disabled={uncontrollable}
+                      title={uncontrollable ? "mute only" : undefined}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (!uncontrollable) void sendPlayToggle(tab);
+                      }}
+                      className={`grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-white/70 transition-colors hover:bg-white/[0.12] ${
+                        uncontrollable ? "cursor-not-allowed opacity-40" : "cursor-pointer"
                       }`}
                     >
-                      {tab.favIconUrl ? (
-                        <img src={tab.favIconUrl} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
-                      ) : (
-                        <Globe className="h-3.5 w-3.5" />
-                      )}
+                      {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
                     </span>
-                    <span className="min-w-0 flex-1 truncate text-[13px] font-medium tracking-[-0.01em]">{tab.title}</span>
-                  </button>
+                    <span
+                      role="button"
+                      tabIndex={-1}
+                      aria-label={tab.muted ? `Unmute ${tab.title}` : `Mute ${tab.title}`}
+                      aria-pressed={tab.muted}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleMute(tab);
+                      }}
+                      className="grid h-7 w-7 shrink-0 cursor-pointer place-items-center rounded-full bg-white/[0.06] text-white/70 transition-colors hover:bg-white/[0.12]"
+                    >
+                      {tab.muted ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
+                    </span>
+                  </div>
+                );
+              })}
+            </>
+          ) : (
+            <>
+              {loading && <div className="px-3 py-2 text-xs text-white/60">Loading tabs…</div>}
+              {!loading && orderedTabs.length === 0 && (
+                <div className="px-3 py-2 text-xs text-white/55">
+                  {query.trim() ? "No matching tabs" : "No other tabs open"}
                 </div>
-              );
-            })}
+              )}
+
+              {!loading &&
+                orderedTabs.map((tab, index) => {
+                  const inRecentSection = index < featuredRecentCount;
+                  const inMostVisitedSection =
+                    !inRecentSection && index < featuredRecentCount + featuredMostVisitedCount;
+                  const isFeatured = inRecentSection || inMostVisitedSection;
+
+                  let header: string | null = null;
+                  if (showBuckets && inRecentSection && index === 0) {
+                    header = "Recent";
+                  } else if (showBuckets && inMostVisitedSection && index === featuredRecentCount) {
+                    header = "Most visited";
+                  } else if (!isFeatured) {
+                    const bucket = bucketLabel(tab.lastAccessed, now);
+                    if (showBuckets && bucket !== lastBucket) header = bucket;
+                    if (showBuckets) lastBucket = bucket;
+                  }
+
+                  const active = index === activeIndex;
+                  const isDuplicateTitle = (duplicateTitleCounts.get(tab.title) ?? 0) > 1;
+
+                  return (
+                    <div key={tab.id}>
+                      {header && (
+                        <div className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-white/30">
+                          {header}
+                        </div>
+                      )}
+                      <button
+                        ref={registerItem(index)}
+                        id={`tk-row-${tab.id}`}
+                        role="option"
+                        aria-selected={active}
+                        type="button"
+                        onMouseEnter={() => setActiveIndex(index)}
+                        onClick={() => void activate(tab)}
+                        style={
+                          orderedTabs.length > CONTENT_VISIBILITY_THRESHOLD
+                            ? {
+                                contentVisibility: "auto",
+                                containIntrinsicSize: isDuplicateTitle ? ROW_CONTAIN_SIZE_DUPLICATE : ROW_CONTAIN_SIZE,
+                              }
+                            : undefined
+                        }
+                        className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${
+                          active
+                            ? "bg-[#0a84ff] text-white"
+                            : isFeatured
+                              ? "bg-[#0a84ff]/[0.06] text-white/80 hover:bg-[#0a84ff]/[0.10]"
+                              : "text-white/80 hover:bg-white/[0.06]"
+                        } ${tab.discarded ? "opacity-[0.55]" : ""}`}
+                      >
+                        <span
+                          className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${
+                            active ? "bg-white/20" : "bg-white/[0.08] text-white/80"
+                          }`}
+                        >
+                          <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={24} className="h-full w-full" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">
+                            {highlightTitle(tab.title, query, active)}
+                          </span>
+                          {isDuplicateTitle && (
+                            <span className={`block truncate text-[11px] ${active ? "text-white/70" : "text-white/45"}`}>
+                              {domainOf(tab.url)}
+                            </span>
+                          )}
+                        </span>
+                        <RowGlyphs tab={tab} currentWindowId={currentWindowId} active={active} />
+                      </button>
+                    </div>
+                  );
+                })}
+            </>
+          )}
+          </div>
         </div>
       </div>
 
       {/* Right pane: preview of the focused tab */}
       <div className="flex min-h-0 flex-col">
+        <div key={mode} className="tk-mode-fade flex min-h-0 flex-1 flex-col">
         {!activeTabItem ? (
-          <div className="grid h-full place-items-center text-sm text-white/40">Select a tab to preview</div>
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="grid flex-1 place-items-center text-sm text-white/40">
+              {mode === "audio" && audioList.length === 0 ? "Nothing playing right now" : "Select a tab to preview"}
+            </div>
+            {footer}
+          </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col">
-            {/* Hero (Tier 2 screenshot → Tier 1 og:image → Tier 0 favicon).
-                Takes 60% of the pane height; the description below gets 40%. */}
+            {/* Hero (Tier 2 screenshot → Tier 1 og:image → Tier 0.5 typographic
+                card). Fixed 16:10 aspect ratio (never flex-grown) so it never
+                needs to upscale a thumbnail to fill unpredictable flex space;
+                the metadata pane below takes whatever height remains and
+                scrolls. Keyed by tab + resolved tier so an upgrade, a
+                demotion, or a selection change all cross-fade in rather than
+                hard-swapping. */}
             <div
-              className="relative min-h-0 flex-[3] overflow-hidden border-b border-white/[0.07]"
-              style={{ background: activeCard?.themeColor ? `${activeCard.themeColor}22` : "rgba(255,255,255,0.03)" }}
+              ref={heroRef}
+              className="relative overflow-hidden border-b border-white/[0.07]"
+              style={{
+                aspectRatio: HERO_ASPECT,
+                background:
+                  heroTier === "thumb-contain"
+                    ? `${activeCard?.themeColor ?? "#1c1c1e"}22`
+                    : "rgba(255,255,255,0.03)",
+              }}
             >
-              {thumb ? (
-                <img src={thumb.url} alt="" className="h-full w-full object-cover object-top" />
-              ) : activeCard?.ogImage ? (
-                <img src={activeCard.ogImage} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
-              ) : (
-                <div className="grid h-full place-items-center">
-                  <span className="grid h-12 w-12 place-items-center overflow-hidden rounded-xl bg-white/8">
-                    {activeTabItem.favIconUrl ? (
-                      <img src={activeTabItem.favIconUrl} alt="" className="h-7 w-7 object-cover" referrerPolicy="no-referrer" />
-                    ) : (
-                      <Globe className="h-6 w-6 text-white/60" />
-                    )}
-                  </span>
-                </div>
-              )}
+              <div key={`${activeTabItem.id}:${heroTier}`} className="tk-hero-fade h-full w-full">
+                {heroTier === "thumb-cover" && thumb && (
+                  <>
+                    <img src={thumb.url} alt="" className="h-full w-full object-cover object-top" />
+                    <HeroTopScrim />
+                    <FreshnessChip capturedAt={thumb.capturedAt} now={now} />
+                  </>
+                )}
+                {heroTier === "thumb-contain" && thumb && (
+                  <div className="relative h-full w-full">
+                    <img
+                      src={thumb.url}
+                      alt=""
+                      className="absolute inset-0 h-full w-full scale-110 object-cover opacity-40 blur-2xl"
+                    />
+                    <div className="relative grid h-full w-full place-items-center">
+                      <img src={thumb.url} alt="" className="max-h-full max-w-full object-contain" />
+                    </div>
+                    <HeroTopScrim />
+                    <FreshnessChip capturedAt={thumb.capturedAt} now={now} />
+                  </div>
+                )}
+                {heroTier === "og-cover" && ogImage && (
+                  <>
+                    <img
+                      src={ogImage}
+                      alt=""
+                      className="h-full w-full object-cover object-center"
+                      referrerPolicy="no-referrer"
+                      onLoad={handleOgImageLoad}
+                    />
+                    <HeroTopScrim />
+                  </>
+                )}
+                {heroTier === "typographic" && <HeroTypographicCard tab={activeTabItem} card={activeCard} />}
+              </div>
             </div>
 
-            <div className="min-h-0 flex-[2] overflow-auto px-6 py-5">
+            <div className="min-h-0 flex-1 overflow-auto px-6 py-5">
               <div className="mb-1 flex items-center gap-2 text-[11px] text-white/45">
                 <span className="truncate">{activeCard?.siteName || domainOf(activeTabItem.url)}</span>
-                {(thumb?.capturedAt ?? activeCard?.capturedAt) && (
+                {heroTier !== "thumb-cover" && heroTier !== "thumb-contain" && activeCard?.capturedAt && (
                   <>
                     <span className="text-white/25">·</span>
-                    <span className="shrink-0">
-                      captured {relativeTime(thumb?.capturedAt ?? activeCard!.capturedAt, now)}
-                    </span>
+                    <span className="shrink-0">captured {relativeTime(activeCard.capturedAt, now)}</span>
                   </>
                 )}
               </div>
@@ -447,16 +1365,10 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
               )}
             </div>
 
-            <div className="flex items-center justify-end gap-4 border-t border-white/[0.07] px-6 py-3 text-[11px] text-white/50">
-              <span className="flex items-center gap-1.5">
-                <kbd className="rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70">↵</kbd> Switch to tab
-              </span>
-              <span className="flex items-center gap-1.5">
-                <kbd className="rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70">esc</kbd> Close
-              </span>
-            </div>
+            {footer}
           </div>
         )}
+        </div>
       </div>
     </div>
   );
