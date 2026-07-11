@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TabKnight",
-  "version": "0.23.0",
+  "version": "0.24.0",
   "description": "Keyboard-first Chrome extension for tab management",
   "permissions": [
     "tabs",
@@ -10,7 +10,8 @@
     "windows",
     "scripting",
     "storage",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "favicon"
   ],
   "host_permissions": ["<all_urls>"],
   "content_scripts": [

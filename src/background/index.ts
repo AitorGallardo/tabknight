@@ -208,6 +208,71 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   lastCaptureAt.delete(tabId);
 });
 
+/* -------------------------- per-session visit counts --------------------- */
+// Tracks how many times each tab has been navigated into (activated) during
+// this browser session. Mirrored to chrome.storage.session so the overlay can
+// read it directly, and so counts survive service-worker restarts within the
+// same browser session.
+
+const VISIT_COUNTS_KEY = "visitCounts";
+const visitCounts = new Map<number, number>();
+let visitCountsLoaded: Promise<void> | undefined;
+
+function loadVisitCounts(): Promise<void> {
+  if (!visitCountsLoaded) {
+    visitCountsLoaded = (async () => {
+      try {
+        const stored = await chrome.storage.session.get(VISIT_COUNTS_KEY);
+        const record = stored[VISIT_COUNTS_KEY] as Record<string, number> | undefined;
+        if (record) {
+          for (const [tabId, count] of Object.entries(record)) {
+            visitCounts.set(Number(tabId), count);
+          }
+        }
+      } catch {
+        // Best-effort — counts just start from zero this session.
+      }
+    })();
+  }
+  return visitCountsLoaded;
+}
+
+async function persistVisitCounts(): Promise<void> {
+  try {
+    const record: Record<string, number> = {};
+    for (const [tabId, count] of visitCounts) {
+      record[tabId] = count;
+    }
+    await chrome.storage.session.set({ [VISIT_COUNTS_KEY]: record });
+  } catch {
+    // Best-effort — storage.session write failed, in-memory count still holds.
+  }
+}
+
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  void (async () => {
+    try {
+      await loadVisitCounts();
+      visitCounts.set(activeInfo.tabId, (visitCounts.get(activeInfo.tabId) ?? 0) + 1);
+      await persistVisitCounts();
+    } catch {
+      // Best-effort.
+    }
+  })();
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void (async () => {
+    try {
+      await loadVisitCounts();
+      visitCounts.delete(tabId);
+      await persistVisitCounts();
+    } catch {
+      // Best-effort.
+    }
+  })();
+});
+
 // Update badge on startup
 chrome.runtime.onInstalled.addListener(() => {
   updateBadgeCount();

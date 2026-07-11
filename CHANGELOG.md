@@ -1,0 +1,130 @@
+# Changelog
+
+All notable changes to TabKnight are documented in this file.
+
+Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+
+## [0.24.0] - 2026-07-11
+
+### Added
+
+- Featured rail in the Cmd+K overlay: "Recent" (top 5) and "Most visited" (top
+  5 by per-session visit count) sections above the full list, with a subtle
+  blue tint.
+- Per-session visit tracking — the background worker counts tab activations
+  and mirrors them to `chrome.storage.session` so counts survive
+  service-worker restarts within the same browser session.
+- Favicon fallback chain: the tab's own `favIconUrl`, then Chrome's local
+  favicon cache (new `favicon` permission, no network request), then a
+  letter tile — all local, no network.
+
+### Changed
+
+- Thumbnail captures upgraded to 1600px (from 1280px) to stay retina-sharp on
+  the larger hero pane at 2x DPR.
+- Hero rendering is now aspect-aware: tier-2 thumbnails only get a cover-crop
+  when their captured aspect ratio is close to the 16/10 hero, otherwise they
+  render letterboxed instead of reading as a zoomed-in fragment.
+
+## [0.23.0] - 2026-07-11
+
+### Changed
+
+- Preview hero locked to a 16/10 aspect with top-anchored cropping; small
+  captures are never upscaled beyond a small tolerance — they render crisp at
+  natural size over a blurred copy of themselves instead.
+- `og:image` demoted (in favor of the typographic card) when it's logo-shaped
+  or under 200px wide, so an unrelated banner no longer stands in for a real
+  preview.
+- Thumbnails now show a freshness chip ("just now / 2m ago / 1h ago") with a
+  green dot under an hour old, ticking live every 30s.
+- Neighbor rows (±2 from the selection) are prefetched into a small blob
+  cache, and long lists (60+ tabs) use `content-visibility` for smoother
+  scrolling.
+
+### Added
+
+- Typographic card fallback (Tier 0.5): title, description, and favicon over
+  a theme-color gradient when no usable image exists — a missing preview now
+  looks designed, not broken.
+- Row status glyphs in tabs mode: audible mini-EQ, muted, pinned, sleeping,
+  and other-window badges (priority-ordered, max two per row).
+- Search-match highlighting in row titles.
+
+## [0.22.0] - 2026-07-11
+
+### Changed
+
+- Unified dark-glass design system across every popup view (navigator, save,
+  close, restore) — one selection/multi-select token set, one typography
+  ramp, kbd-chip footers everywhere.
+- Extracted shared `scoreTab` ranking and a `useListNavigation` hook so all
+  list views share one keyboard/ranking implementation instead of duplicated
+  logic drifting apart.
+- Staged Escape (clear query, then close) now applies to the navigator too,
+  matching the overlay.
+- Overlay polish: debounced thumbnail fetches, cross-fades on tier upgrades
+  and mode switches, domain hints on duplicate-titled rows.
+
+### Fixed
+
+- Restore view now loads the default folder on mount instead of waiting for
+  a manual selection change.
+
+## [0.21.0] - 2026-07-11
+
+### Added
+
+- First-run hint banner showing the real bound Cmd+K shortcut (or a prompt to
+  set one), auto-dismissing once the shortcut is actually used.
+- Options page: shortcut display, plain-language privacy explanation, live
+  counts and approximate size of stored preview data, and a one-click
+  "Clear preview data" purge.
+- `PRIVACY.md` documenting what's collected, that it never leaves the
+  browser, retention limits, and how to purge it.
+
+## [0.20.0] - 2026-07-11
+
+### Added
+
+- Instant skeleton shell — the overlay paints a matching glass card with
+  shimmer rows the same frame Cmd+K fires, instead of an empty hole.
+- Session continuity: the overlay remembers its mode and selection across
+  opens (falls back gracefully if the tab or audio source is gone).
+- Per-row failure hints when a play/mute control can't reach its tab.
+
+### Changed
+
+- Open/close motion (140ms, respects `prefers-reduced-motion`) replaces the
+  previous abrupt show/hide.
+- Background capture and content-script re-injection hardened per-window to
+  avoid redundant standalone-tab fallbacks.
+
+## [0.19.0] - 2026-07-11
+
+### Added
+
+- Staged Escape: one Esc clears the query, the next steps back from audio
+  mode, the next closes — never a surprise dismissal.
+- Selection continuity between tabs and audio mode.
+- Full accessibility pass: listbox/option ARIA roles, `aria-activedescendant`,
+  labeled row controls, an `aria-live` region for mode/control announcements,
+  and `prefers-reduced-motion` support.
+
+## [0.18.0] - 2026-07-11
+
+### Added
+
+- Audio playground: a `Tab`-key toggle into an "Audio" mode inside the Cmd+K
+  overlay listing tabs currently playing or muted audio, with a live
+  CSS-only equalizer.
+- Per-tab controls: mute/unmute (works on any tab, including restricted
+  pages) and play/pause (routed through the tab's content script).
+- Keyboard shortcuts in audio mode: `Space` play/pause, `←/→` mute, `Enter`
+  jump to tab.
+
+## [0.17.x and earlier]
+
+Tab-preview overlay foundation, bookmark-backed sessions, and the original
+Arc-style tab navigator. See `git log` for the full history predating this
+file.

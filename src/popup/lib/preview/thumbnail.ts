@@ -12,12 +12,12 @@ import { hashUrl } from "./hash";
 import { putThumbnail, pruneThumbnails } from "./db";
 
 // Capture as JPEG (source quality only needs to survive one re-encode below;
-// PNG just wastes memory/time for no visible gain). 1280px keeps the stored
-// image retina-sharp for the ~640px hero pane without bloating storage.
+// PNG just wastes memory/time for no visible gain). 1600px keeps the stored
+// image retina-sharp for the ~700px hero pane at 2x DPR without bloating storage.
 const CAPTURE_FORMAT = "jpeg" as const;
 const CAPTURE_QUALITY = 90;
-const THUMB_MAX_WIDTH = 1280;
-const THUMB_QUALITY = 0.82;
+const THUMB_MAX_WIDTH = 1600;
+const THUMB_QUALITY = 0.85;
 
 /** Only http(s) pages can be captured; chrome://, the Web Store, etc. cannot. */
 export function isCapturableUrl(url: string | undefined): url is string {

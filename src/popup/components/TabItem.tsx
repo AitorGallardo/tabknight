@@ -1,3 +1,4 @@
+import { Favicon } from "./Favicon";
 import { cn } from "../lib/cn";
 import { truncate } from "../lib/utils";
 import type { TabInfo } from "../types";
@@ -27,15 +28,7 @@ export function TabItem({ tab, selected, onToggle }: TabItemProps) {
         )}
       />
       <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md bg-white/[0.08] text-white/80">
-        <img
-          src={tab.favIconUrl || "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect fill='%23888' width='16' height='16' rx='2'/></svg>"}
-          alt=""
-          className="h-full w-full object-cover"
-          onError={(e) => {
-            (e.target as HTMLImageElement).src =
-              "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect fill='%23888' width='16' height='16' rx='2'/></svg>";
-          }}
-        />
+        <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={24} className="h-full w-full object-cover" />
       </span>
       <span
         className="flex-1 truncate text-[13px] font-medium tracking-[-0.01em]"

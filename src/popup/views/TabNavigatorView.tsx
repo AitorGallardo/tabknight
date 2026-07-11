@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Globe, Search, X } from "lucide-react";
+import { Search, X } from "lucide-react";
+import { Favicon } from "../components/Favicon";
 import { activateTab, getAllTabs, openTabFromQuery } from "../lib/chrome-api";
 import { scoreTab } from "../lib/rank";
 import { useListNavigation } from "../hooks/useListNavigation";
@@ -318,16 +319,12 @@ export function TabNavigatorView({
                 className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${rowClass}`}
               >
                 <span className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${tileClass}`}>
-                  {item.tab.favIconUrl ? (
-                    <img
-                      src={item.tab.favIconUrl}
-                      alt=""
-                      className="h-full w-full object-cover"
-                      referrerPolicy="no-referrer"
-                    />
-                  ) : (
-                    <Globe className="h-3.5 w-3.5" />
-                  )}
+                  <Favicon
+                    pageUrl={item.tab.url}
+                    favIconUrl={item.tab.favIconUrl}
+                    size={24}
+                    className="h-full w-full object-cover"
+                  />
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">{item.tab.title}</span>

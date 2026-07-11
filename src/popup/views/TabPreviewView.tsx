@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode, SyntheticEvent } from "react";
-import { AppWindow, Globe, Moon, Music, Pause, Pin, Play, Search, Volume2, VolumeX, X } from "lucide-react";
+import { AppWindow, Moon, Music, Pause, Pin, Play, Search, Volume2, VolumeX, X } from "lucide-react";
 import { activateTab, getAllTabs, setTabMuted } from "../lib/chrome-api";
 import { getAllCards, getThumbnail } from "../lib/preview/db";
 import { hashUrl } from "../lib/preview/hash";
@@ -11,6 +11,7 @@ import type {
   TabThumbnail,
 } from "../lib/preview/types";
 import { AudioEq } from "../components/AudioEq";
+import { Favicon } from "../components/Favicon";
 import { scoreTab } from "../lib/rank";
 import { useListNavigation } from "../hooks/useListNavigation";
 
@@ -70,6 +71,14 @@ const OG_MIN_WIDTH_PX = 200;
 const OG_SQUARE_LO = 0.8;
 const OG_SQUARE_HI = 1.25;
 const THUMB_UPSCALE_MAX = 1.15;
+/** Tier-2 thumbnails are only "cover"-cropped when their captured aspect is
+ *  close to the hero's 16/10 — otherwise a cover-crop reads as a zoomed-in
+ *  fragment, so we fall back to the letterboxed contain treatment. */
+const THUMB_ASPECT_TARGET = 1.6;
+const THUMB_ASPECT_TOLERANCE = 0.12;
+/** Thumbnails captured before width/height were recorded (or genuinely
+ *  low-res legacy captures) defer to a fresher og:image when one exists. */
+const LEGACY_THUMB_MIN_WIDTH = 900;
 const FRESH_TICK_MS = 30_000;
 const STALE_LABEL_MS = 3_600_000;
 const PREFETCH_RADIUS = 2;
@@ -82,6 +91,11 @@ const ROW_CONTAIN_SIZE = "0 36px";
 const ROW_CONTAIN_SIZE_DUPLICATE = "0 44px";
 /** Only pay the content-visibility bookkeeping cost once lists get long. */
 const CONTENT_VISIBILITY_THRESHOLD = 60;
+
+/* --------------------------- featured rail spec ---------------------------- */
+const FEATURED_RECENT_COUNT = 5;
+const FEATURED_MOST_VISITED_COUNT = 5;
+const FEATURED_MIN_VISITS = 2;
 
 /** Group label for the left rail, à la Grok's "Today / Last 7 days / ...". */
 function bucketLabel(lastAccessed: number, now: number): string {
@@ -219,11 +233,7 @@ function HeroTypographicCard({ tab, card }: { tab: NavigatorTab; card?: ContentC
       <div className="relative">
         <div className="mb-3 flex items-center gap-2">
           <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md bg-white/[0.08]">
-            {tab.favIconUrl ? (
-              <img src={tab.favIconUrl} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
-            ) : (
-              <Globe className="h-3.5 w-3.5 text-white/60" />
-            )}
+            <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={24} className="h-full w-full" />
           </span>
           <span className="truncate text-[12px] font-medium tracking-[-0.01em] text-white/55">{siteName}</span>
         </div>
@@ -241,6 +251,9 @@ function HeroTypographicCard({ tab, card }: { tab: NavigatorTab; card?: ContentC
 export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPreviewViewProps) {
   const [tabs, setTabs] = useState<NavigatorTab[]>([]);
   const [cards, setCards] = useState<Map<string, ContentCard>>(new Map());
+  // tabId -> times activated this session, maintained by the background;
+  // powers the "Most visited" featured rail section (best-effort read).
+  const [visitCounts, setVisitCounts] = useState<Record<string, number>>({});
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const [currentWindowId, setCurrentWindowId] = useState<number | null>(null);
@@ -280,14 +293,19 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   useEffect(() => {
     const load = async () => {
       setLoading(true);
-      const [allTabs, currentWindow, allCards] = await Promise.all([
+      const [allTabs, currentWindow, allCards, visitCountsResult] = await Promise.all([
         getAllTabs(),
         chrome.windows.getCurrent(),
         getAllCards().catch(() => [] as ContentCard[]),
+        chrome.storage.session
+          .get("visitCounts")
+          .then((result) => (result as { visitCounts?: Record<string, number> }).visitCounts ?? {})
+          .catch(() => ({}) as Record<string, number>),
       ]);
 
       setCurrentWindowId(currentWindow.id ?? null);
       setCards(new Map(allCards.map((card) => [card.urlHash, card])));
+      setVisitCounts(visitCountsResult);
 
       // Hide TabKnight's own preview page and the tab the user is currently on,
       // so the previously-visited tab (sorted by lastAccessed) ranks first.
@@ -426,8 +444,10 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     };
   }, []);
 
-  // Flat, ranked list of selectable tabs (keyboard navigation indexes into this).
-  const orderedTabs = useMemo(() => {
+  // Flat, base-ranked list (unfeatured). This is the whole list when
+  // searching; when not searching it's the source the featured sections and
+  // bucketed remainder below are carved out of.
+  const rankedTabs = useMemo(() => {
     const q = query.trim();
     return tabs
       .map((tab) => ({ tab, score: scoreTab(tab, q) }))
@@ -444,6 +464,37 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
       })
       .map(({ tab }) => tab);
   }, [tabs, query, currentWindowId]);
+
+  // Featured rail sections (tabs mode, no active search only): "Recent" is the
+  // top N of rankedTabs (already lastAccessed-desc when unsearched); "Most
+  // visited" is carved from what's left, ranked by session visit count, with
+  // a floor so a single stray visit doesn't qualify. Both are disjoint from
+  // each other and from the bucketed remainder below.
+  const featured = useMemo(() => {
+    if (query.trim() !== "") return null;
+    const recent = rankedTabs.slice(0, FEATURED_RECENT_COUNT);
+    const recentIds = new Set(recent.map((tab) => tab.id));
+    const afterRecent = rankedTabs.filter((tab) => !recentIds.has(tab.id));
+    const mostVisited = afterRecent
+      .map((tab) => ({ tab, count: visitCounts[tab.id] ?? 0 }))
+      .filter(({ count }) => count >= FEATURED_MIN_VISITS)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, FEATURED_MOST_VISITED_COUNT)
+      .map(({ tab }) => tab);
+    const mostVisitedIds = new Set(mostVisited.map((tab) => tab.id));
+    const remainder = afterRecent.filter((tab) => !mostVisitedIds.has(tab.id));
+    return { recent, mostVisited, remainder };
+  }, [rankedTabs, query, visitCounts]);
+
+  // Single ordered array driving both rendering and keyboard nav: featured
+  // Recent rows, then Most visited, then the bucketed remainder — exactly the
+  // visual order. Falls back to the flat ranked list while searching.
+  const orderedTabs = useMemo(
+    () => (featured ? [...featured.recent, ...featured.mostVisited, ...featured.remainder] : rankedTabs),
+    [featured, rankedTabs]
+  );
+  const featuredRecentCount = featured?.recent.length ?? 0;
+  const featuredMostVisitedCount = featured?.mostVisited.length ?? 0;
 
   // Rows sharing a title (e.g. several GitHub PRs, several Google Docs) get a
   // domain hint appended so they stay distinguishable at a glance.
@@ -524,8 +575,10 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   // a dwell period so arrow-key mashing doesn't fire an IndexedDB read per
   // keypress; the previously-displayed thumbnail stays put (never blank)
   // while the user rests on a new row and the fetch resolves.
-  const [thumb, setThumb] = useState<{ url: string; capturedAt: number; width?: number } | null>(null);
-  const thumbRef = useRef<{ url: string; capturedAt: number; width?: number } | null>(null);
+  const [thumb, setThumb] = useState<{ url: string; capturedAt: number; width?: number; height?: number } | null>(
+    null
+  );
+  const thumbRef = useRef<{ url: string; capturedAt: number; width?: number; height?: number } | null>(null);
   const thumbRequestRef = useRef(0);
   useEffect(() => {
     thumbRef.current = thumb;
@@ -587,7 +640,12 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
       setThumb((prev) => {
         if (prev) URL.revokeObjectURL(prev.url);
         return record
-          ? { url: URL.createObjectURL(record.blob), capturedAt: record.capturedAt, width: record.width }
+          ? {
+              url: URL.createObjectURL(record.blob),
+              capturedAt: record.capturedAt,
+              width: record.width,
+              height: record.height,
+            }
           : null;
       });
     };
@@ -678,13 +736,40 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   const ogRejected = activeUrlHash !== null && ogDemoted.has(activeUrlHash);
   const ogImage = !ogRejected ? activeCard?.ogImage : undefined;
 
-  const heroTier: "thumb-cover" | "thumb-contain" | "og-cover" | "typographic" = thumb
-    ? thumb.width !== undefined && thumb.width < heroBoxWidth * THUMB_UPSCALE_MAX
-      ? "thumb-contain"
-      : "thumb-cover"
-    : ogImage
-      ? "og-cover"
-      : "typographic";
+  // Resolve the tier a Tier-2 thumbnail alone would render at (or null if
+  // there's no thumbnail). Small captures still force "contain" outright
+  // (upscaling a small image to cover the hero looks soft); otherwise "cover"
+  // is only used when the capture's aspect is close to the hero's 16/10 —
+  // a mismatched aspect crops a chunk out and reads as a zoomed-in fragment,
+  // so it falls back to the letterboxed contain treatment instead. Missing
+  // width/height (older records) keeps the pre-existing cover-by-default
+  // behavior.
+  const thumbTier: "thumb-cover" | "thumb-contain" | null = !thumb
+    ? null
+    : thumb.width === undefined
+      ? "thumb-cover"
+      : thumb.width < heroBoxWidth * THUMB_UPSCALE_MAX
+        ? "thumb-contain"
+        : thumb.height === undefined
+          ? "thumb-cover"
+          : Math.abs(thumb.width / thumb.height - THUMB_ASPECT_TARGET) / THUMB_ASPECT_TARGET <= THUMB_ASPECT_TOLERANCE
+            ? "thumb-cover"
+            : "thumb-contain";
+
+  // Legacy/low-res thumbnails (captured before width/height were recorded
+  // reliably, or genuinely small) defer to a fresher og:image when one is
+  // available and hasn't been demoted; the thumbnail remains the fallback if
+  // the og:image later fails its own quality check onLoad.
+  const preferOgOverLegacyThumb =
+    !!thumb && (thumb.width === undefined || thumb.width < LEGACY_THUMB_MIN_WIDTH) && !!ogImage;
+
+  const heroTier: "thumb-cover" | "thumb-contain" | "og-cover" | "typographic" = preferOgOverLegacyThumb
+    ? "og-cover"
+    : thumbTier
+      ? thumbTier
+      : ogImage
+        ? "og-cover"
+        : "typographic";
 
   const handleOgImageLoad = useCallback(
     (event: SyntheticEvent<HTMLImageElement>) => {
@@ -1039,11 +1124,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                           active ? "bg-white/20" : "bg-white/[0.08] text-white/80"
                         }`}
                       >
-                        {tab.favIconUrl ? (
-                          <img src={tab.favIconUrl} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
-                        ) : (
-                          <Globe className="h-3.5 w-3.5" />
-                        )}
+                        <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={24} className="h-full w-full" />
                       </span>
                       <AudioEq playing={playing} />
                       <span className="min-w-0 flex-1">
@@ -1105,9 +1186,22 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
 
               {!loading &&
                 orderedTabs.map((tab, index) => {
-                  const bucket = bucketLabel(tab.lastAccessed, now);
-                  const header = showBuckets && bucket !== lastBucket ? bucket : null;
-                  if (header) lastBucket = bucket;
+                  const inRecentSection = index < featuredRecentCount;
+                  const inMostVisitedSection =
+                    !inRecentSection && index < featuredRecentCount + featuredMostVisitedCount;
+                  const isFeatured = inRecentSection || inMostVisitedSection;
+
+                  let header: string | null = null;
+                  if (showBuckets && inRecentSection && index === 0) {
+                    header = "Recent";
+                  } else if (showBuckets && inMostVisitedSection && index === featuredRecentCount) {
+                    header = "Most visited";
+                  } else if (!isFeatured) {
+                    const bucket = bucketLabel(tab.lastAccessed, now);
+                    if (showBuckets && bucket !== lastBucket) header = bucket;
+                    if (showBuckets) lastBucket = bucket;
+                  }
+
                   const active = index === activeIndex;
                   const isDuplicateTitle = (duplicateTitleCounts.get(tab.title) ?? 0) > 1;
 
@@ -1135,7 +1229,11 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                             : undefined
                         }
                         className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${
-                          active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]"
+                          active
+                            ? "bg-[#0a84ff] text-white"
+                            : isFeatured
+                              ? "bg-[#0a84ff]/[0.06] text-white/80 hover:bg-[#0a84ff]/[0.10]"
+                              : "text-white/80 hover:bg-white/[0.06]"
                         } ${tab.discarded ? "opacity-[0.55]" : ""}`}
                       >
                         <span
@@ -1143,11 +1241,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                             active ? "bg-white/20" : "bg-white/[0.08] text-white/80"
                           }`}
                         >
-                          {tab.favIconUrl ? (
-                            <img src={tab.favIconUrl} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
-                          ) : (
-                            <Globe className="h-3.5 w-3.5" />
-                          )}
+                          <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={24} className="h-full w-full" />
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">
