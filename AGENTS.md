@@ -37,10 +37,10 @@ Key Mira characteristics:
 - Support keyboard navigation
 
 ## Versioning Rules
-- Baseline version is `0.12.0`. Do not use `1.x` versions yet.
+- The current version is whatever `public/manifest.json` says. Do not use `1.x` versions yet.
 - Use SemVer: `MAJOR.MINOR.PATCH`.
-- Keep `version` synchronized in both `/Users/aitor/dev/tabknight/package.json` and `/Users/aitor/dev/tabknight/public/manifest.json`.
-- Bump `PATCH` (`0.12.x`) for bug fixes, refactors, style tweaks, and non-breaking internal changes.
+- Keep `version` synchronized in both `package.json` and `public/manifest.json`.
+- Bump `PATCH` (`0.x.y`) for bug fixes, refactors, style tweaks, and non-breaking internal changes.
 - Bump `MINOR` (`0.x.0`) for new user-facing features, new permissions, new commands, or notable UX flows that are backward-compatible.
 - `MAJOR` remains `0` until explicitly approved to declare API/behavior stability for `1.0.0`.
 - Never skip synchronization: if one version changes, update the other in the same change.

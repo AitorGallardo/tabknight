@@ -4,6 +4,24 @@ All notable changes to TabKnight are documented in this file.
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.28.0] - 2026-07-13
+
+### Added
+
+- CI workflow: typecheck, build, and the e2e smoke test on Linux for every
+  push and pull request.
+- `bun run package` — builds and zips a store-ready package into `release/`.
+- Chrome Web Store listing pack (`chrome_web_store/listing.md`) and generated
+  store assets (four screenshots + promo tiles).
+- CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, and issue/PR templates.
+
+### Changed
+
+- Manifest description rewritten to double as the store summary.
+- Removed the unused `activeTab` and invalid `windows` permissions — fewer
+  install warnings, same features.
+- The store zip no longer ships oversized icon files.
+
 ## [0.27.0] - 2026-07-13
 
 ### Fixed
@@ -34,6 +52,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - One copy voice across the product: sentence case, unified ellipsis,
   "Couldn't …" error style; one keyboard-chip component; one focus-ring
   treatment (and rings no longer fire on mouse clicks).
+
+
 
 ## [0.26.0] - 2026-07-12
 

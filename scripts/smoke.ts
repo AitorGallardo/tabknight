@@ -62,16 +62,24 @@ async function findFreePort(): Promise<number> {
 }
 
 function findChromeBinary(): string {
+  const envPath = process.env.CHROME_PATH;
+  if (envPath && existsSync(envPath)) return envPath;
   const candidates = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/chromium",
   ];
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate;
   }
   throw new Error(
-    `No Chrome/Chromium binary found. Checked:\n${candidates.map((c) => `  - ${c}`).join("\n")}`
+    `No Chrome/Chromium binary found. Set CHROME_PATH or install Chrome. Checked:\n${candidates
+      .map((c) => `  - ${c}`)
+      .join("\n")}`
   );
 }
 

@@ -12,7 +12,7 @@
 [![React 18](https://img.shields.io/badge/React_18-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.24.0-6366f1?style=for-the-badge)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.27.0-6366f1?style=for-the-badge)](./CHANGELOG.md)
 
 </div>
 
@@ -20,7 +20,7 @@
 
 TabKnight turns Chrome's tab strip into a fast, keyboard-driven command surface. Hit one shortcut and a glassmorphic palette appears **over your current page** — fuzzy-search every tab in every window, see a real preview of where you're going, and jump there with `Enter`. When you're done, save a working set of tabs as a bookmark-backed session and restore it later.
 
-It's local-first (everything lives in your browser, zero network calls), and it degrades gracefully even on Chrome's own internal pages.
+It's local-first (everything lives in your browser; TabKnight makes no network requests of its own — preview images like a page's `og:image` are loaded by the browser directly from the site that published them), and it degrades gracefully even on Chrome's own internal pages.
 
 <div align="center">
 
@@ -157,9 +157,7 @@ Declared in [`public/manifest.json`](public/manifest.json) — each maps to a re
 | --- | --- |
 | `tabs` | Enumerate, activate, create, and close tabs; read titles/URLs/favicons |
 | `bookmarks` | Save and restore tab sets as bookmark folders |
-| `activeTab` | Operate on the current page for overlay injection and capture |
-| `windows` | Focus the destination window during cross-window switching |
-| `scripting` | (Re)inject the content script on supported pages |
+| `scripting` | (Re)inject the content script on supported pages; read a page's media-session info (track title/artwork) for the audio panel |
 | `storage` | Hand off context between the background worker and the fallback UI; session-scoped visit counts |
 | `unlimitedStorage` | Room for the IndexedDB snapshot + thumbnail store |
 | `favicon` | Read favicons from Chrome's local cache (no network request) for the fallback favicon tier |

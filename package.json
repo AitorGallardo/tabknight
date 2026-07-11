@@ -7,7 +7,8 @@
     "dev": "bun run config/build.ts --watch",
     "build": "bun run config/build.ts",
     "typecheck": "tsc --noEmit",
-    "smoke": "bun scripts/smoke.ts"
+    "smoke": "bun scripts/smoke.ts",
+    "package": "bun scripts/package.ts"
   },
   "dependencies": {
     "react": "^18.2.0",
