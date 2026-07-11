@@ -1,6 +1,7 @@
-import { useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { ScrollArea } from "./ui/scroll-area";
 import { DomainGroup } from "./DomainGroup";
+import { useRovingCursor } from "../hooks/useRovingCursor";
 import type { DomainGroup as DomainGroupType } from "../types";
 
 interface TabListProps {
@@ -16,6 +17,17 @@ export function TabList({
   onToggle,
   searchQuery,
 }: TabListProps) {
+  const [collapsedDomains, setCollapsedDomains] = useState<Set<string>>(new Set());
+
+  const toggleDomain = useCallback((domain: string) => {
+    setCollapsedDomains((prev) => {
+      const next = new Set(prev);
+      if (next.has(domain)) next.delete(domain);
+      else next.add(domain);
+      return next;
+    });
+  }, []);
+
   const filteredGroups = useMemo(() => {
     if (!searchQuery.trim()) return domainGroups;
 
@@ -33,6 +45,29 @@ export function TabList({
       .filter((group) => group.tabs.length > 0);
   }, [domainGroups, searchQuery]);
 
+  // Flattened, collapse-aware visible tabs — the roving cursor's index space.
+  const visibleTabs = useMemo(
+    () =>
+      filteredGroups.flatMap((group) =>
+        collapsedDomains.has(group.domain) ? [] : group.tabs
+      ),
+    [filteredGroups, collapsedDomains]
+  );
+
+  const handleCursorToggle = useCallback(
+    (index: number) => {
+      const tab = visibleTabs[index];
+      if (tab) onToggle(tab.id);
+    },
+    [visibleTabs, onToggle]
+  );
+
+  const { cursorIndex, listRef, registerItem } = useRovingCursor({
+    items: visibleTabs,
+    onToggle: handleCursorToggle,
+    resetKey: searchQuery,
+  });
+
   const totalTabs = filteredGroups.reduce((sum, g) => sum + g.tabs.length, 0);
 
   if (totalTabs === 0) {
@@ -43,17 +78,30 @@ export function TabList({
     );
   }
 
+  let indexOffset = 0;
+
   return (
-    <ScrollArea className="flex-1 min-h-[200px] resize-y">
-      {filteredGroups.map((group) => (
-        <DomainGroup
-          key={group.domain}
-          domain={group.domain}
-          tabs={group.tabs}
-          selectedIds={selectedIds}
-          onToggle={onToggle}
-        />
-      ))}
+    <ScrollArea ref={listRef} className="flex-1 min-h-[200px] resize-y">
+      {filteredGroups.map((group) => {
+        const expanded = !collapsedDomains.has(group.domain);
+        const groupOffset = indexOffset;
+        if (expanded) indexOffset += group.tabs.length;
+
+        return (
+          <DomainGroup
+            key={group.domain}
+            domain={group.domain}
+            tabs={group.tabs}
+            selectedIds={selectedIds}
+            onToggle={onToggle}
+            expanded={expanded}
+            onToggleExpanded={() => toggleDomain(group.domain)}
+            indexOffset={groupOffset}
+            cursorIndex={cursorIndex}
+            registerItem={registerItem}
+          />
+        );
+      })}
     </ScrollArea>
   );
 }

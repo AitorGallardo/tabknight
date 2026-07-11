@@ -56,11 +56,13 @@ export function App() {
     if (!isOverlay) return;
     // The page behind the iframe provides the backdrop; keep the frame see-through
     // so the panel's rounded corners reveal it.
-    const previous = document.body.style.background;
+    const previousHtml = document.documentElement.style.background;
+    const previousBody = document.body.style.background;
     document.documentElement.style.background = "transparent";
     document.body.style.background = "transparent";
     return () => {
-      document.body.style.background = previous;
+      document.documentElement.style.background = previousHtml;
+      document.body.style.background = previousBody;
     };
   }, [isOverlay]);
 
@@ -136,12 +138,14 @@ export function App() {
     >
       <CmdKHintBanner />
       <div className="min-h-0 flex-1">
-        {view === "navigator" && <TabNavigatorView onOpenSaveFlow={() => setView("save")} />}
-        {view === "save" && <SaveTabsView onSaveComplete={handleSaveComplete} />}
-        {view === "close" && saveSummary && (
-          <CloseTabsView saveSummary={saveSummary} onComplete={handleCloseComplete} />
-        )}
-        {view === "restore" && <RestoreView onBack={handleBackToSave} />}
+        <div key={view} className="tk-mode-fade h-full">
+          {view === "navigator" && <TabNavigatorView onOpenSaveFlow={() => setView("save")} />}
+          {view === "save" && <SaveTabsView onSaveComplete={handleSaveComplete} />}
+          {view === "close" && saveSummary && (
+            <CloseTabsView saveSummary={saveSummary} onComplete={handleCloseComplete} />
+          )}
+          {view === "restore" && <RestoreView onBack={handleBackToSave} />}
+        </div>
       </div>
     </div>
   );

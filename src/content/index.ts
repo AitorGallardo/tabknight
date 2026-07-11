@@ -2,6 +2,7 @@ import { extractContentCard } from "../popup/lib/preview/harvester";
 import type {
   MediaControlMessage,
   MediaControlResult,
+  MediaStatusResult,
   PreviewCardCaptureMessage,
 } from "../popup/lib/preview/types";
 
@@ -266,8 +267,25 @@ document.addEventListener(
 // unreachable from here — querySelectorAll only sees the top document, so
 // those tabs report "no-media".
 
+function queryMedia(): HTMLMediaElement[] {
+  return Array.from(document.querySelectorAll<HTMLMediaElement>("video, audio"));
+}
+
+// Shared with handleMediaStatus: the playing element if there is one, else the
+// longest-duration finite-length element, else just the first one found.
+function pickPrimaryMedia(media: HTMLMediaElement[]): HTMLMediaElement {
+  const playing = media.filter((el) => !el.paused && !el.ended);
+  if (playing.length > 0) {
+    return playing.reduce((best, el) => (el.duration > best.duration ? el : best));
+  }
+  const finite = media.filter((el) => Number.isFinite(el.duration));
+  return finite.length > 0
+    ? finite.reduce((best, el) => (el.duration > best.duration ? el : best))
+    : media[0];
+}
+
 async function handleMediaControl(message: MediaControlMessage): Promise<MediaControlResult> {
-  const media = Array.from(document.querySelectorAll<HTMLMediaElement>("video, audio"));
+  const media = queryMedia();
   if (media.length === 0) {
     return { ok: false, mediaCount: 0, error: "no-media" };
   }
@@ -282,10 +300,7 @@ async function handleMediaControl(message: MediaControlMessage): Promise<MediaCo
     return { ok: true, playing: false, mediaCount: media.length };
   }
 
-  const finite = media.filter((el) => Number.isFinite(el.duration));
-  const candidate = finite.length > 0
-    ? finite.reduce((best, el) => (el.duration > best.duration ? el : best))
-    : media[0];
+  const candidate = pickPrimaryMedia(media);
 
   try {
     await candidate.play();
@@ -293,6 +308,22 @@ async function handleMediaControl(message: MediaControlMessage): Promise<MediaCo
   } catch {
     return { ok: false, playing: false, mediaCount: media.length, error: "autoplay-blocked" };
   }
+}
+
+function handleMediaStatus(): MediaStatusResult {
+  const media = queryMedia();
+  if (media.length === 0) {
+    return { ok: false, mediaCount: 0, error: "no-media" };
+  }
+
+  const el = pickPrimaryMedia(media);
+  return {
+    ok: true,
+    playing: !el.paused && !el.ended,
+    currentTime: el.currentTime,
+    duration: Number.isFinite(el.duration) ? el.duration : undefined,
+    mediaCount: media.length,
+  };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -305,6 +336,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "MEDIA_CONTROL") {
     void handleMediaControl(message as MediaControlMessage).then(sendResponse);
     return true;
+  }
+
+  if (message?.type === "MEDIA_STATUS") {
+    sendResponse(handleMediaStatus());
+    return false;
   }
 
   return false;

@@ -129,8 +129,10 @@
   animation: tk-hero-fade 150ms ease-out;
 }
 
-/* Tab-preview overlay: tabs <-> audio mode switch. Purely visual — keyboard
-   handling is unaffected since it never waits on this animation. */
+/* Generic view/mode cross-fade: tab-preview overlay's tabs <-> audio mode
+   switch, and the toolbar popup's navigator/save/close/restore view switch.
+   Purely visual — keyboard handling is unaffected since it never waits on
+   this animation. */
 @keyframes tk-mode-fade {
   from {
     opacity: 0;

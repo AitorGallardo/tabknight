@@ -189,6 +189,12 @@ export function SaveTabsView({ onSaveComplete }: SaveTabsViewProps) {
 
         <div className="flex items-center justify-end gap-4 text-[11px] text-white/50">
           <span className="flex items-center gap-1.5">
+            <kbd className={kbdClass}>↑↓</kbd> Move
+          </span>
+          <span className="flex items-center gap-1.5">
+            <kbd className={kbdClass}>space</kbd> Select
+          </span>
+          <span className="flex items-center gap-1.5">
             <kbd className={kbdClass}>↵</kbd> Save
           </span>
           <span className="flex items-center gap-1.5">

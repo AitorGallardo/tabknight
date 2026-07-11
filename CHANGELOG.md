@@ -4,6 +4,26 @@ All notable changes to TabKnight are documented in this file.
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.25.0] - 2026-07-11
+
+### Added
+
+- Full keyboard reach in the Save and Close flows: arrow keys move a cursor
+  through the visible list (collapse-aware), Space toggles the row's checkbox,
+  and the cursor re-anchors to the same tab when groups collapse.
+- Restore view keyboard wiring — Enter opens all tabs, Esc goes back; the
+  footer hints are now real.
+- "Now playing" media block in the audio panel: elapsed / total time with a
+  progress bar for the selected audio tab, updating live; live streams show a
+  Live label.
+
+### Changed
+
+- The toolbar popup's view switches (navigator / save / close / restore) now
+  cross-fade instead of hard-swapping; respects reduced-motion.
+- A tab that reported no reachable media becomes controllable again the moment
+  it audibly starts playing.
+
 ## [0.24.0] - 2026-07-11
 
 ### Added

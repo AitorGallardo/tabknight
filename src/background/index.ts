@@ -12,6 +12,7 @@ import type {
   AudibleStateChangedMessage,
   ContentCard,
   MediaControlResult,
+  MediaStatusResult,
 } from "../popup/lib/preview/types";
 
 async function injectContentScriptIntoOpenTabs(): Promise<void> {
@@ -108,6 +109,20 @@ async function forwardMediaControl(
         error: retryError instanceof Error ? retryError.message : "Unknown runtime error",
       };
     }
+  }
+}
+
+// Passive poll for the "now playing" media block — unlike forwardMediaControl,
+// this never injects the content script: if it isn't there, the tab just has
+// no status yet, and the next poll tick will retry cheaply.
+async function forwardMediaStatus(tabId: number): Promise<MediaStatusResult> {
+  try {
+    return await chrome.tabs.sendMessage(tabId, { type: "MEDIA_STATUS" });
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Unknown runtime error",
+    };
   }
 }
 
@@ -391,6 +406,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message?.type === "MEDIA_CONTROL_REQUEST") {
       const result = await forwardMediaControl(message.tabId, message.action);
+      sendResponse(result);
+      return;
+    }
+
+    if (message?.type === "MEDIA_STATUS_REQUEST") {
+      const result = await forwardMediaStatus(message.tabId);
       sendResponse(result);
       return;
     }
