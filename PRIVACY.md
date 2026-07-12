@@ -67,6 +67,7 @@ what's described above:
 | --- | --- |
 | `tabs` | Read titles/URLs of open tabs for search; switch, open, and close tabs |
 | `bookmarks` | Save and restore tab sets as bookmark folders |
+| `activeTab` | Temporary access to the current tab when you invoke the shortcut, for users who restrict site access to on-click |
 | `scripting` | (Re)inject the overlay/content script; read a tab's media-session metadata for audio controls |
 | `storage`, `unlimitedStorage` | Store previews and small flags on-device |
 | `favicon` | Read favicons from Chrome's local cache |

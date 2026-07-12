@@ -54,6 +54,9 @@ MIT-licensed. Source code, changelog, and issue tracker: https://github.com/Aito
 **`bookmarks`**
 > Powers the save/restore sessions feature: the user's selected tabs are saved into a bookmark folder they choose, and previously saved folders can be reopened as tabs. No bookmark data leaves the device.
 
+**`activeTab`**
+> Chrome lets users restrict an extension's site access to "when you click the extension". For users who choose that stricter setting, `activeTab` grants temporary access to the current tab at the moment they invoke TabKnight's keyboard shortcut, so the overlay and the thumbnail capture of that tab keep working. It adds no install warning beyond the host permission and grants nothing the user didn't just request.
+
 **`scripting`**
 > Re-injects the extension's own bundled content script into already-open tabs after install/update and on demand (the script that renders the overlay and enables per-tab audio controls), and runs a small bundled snippet to read a tab's media-session metadata (track title/artwork) for the audio view. No remote code is ever executed.
 

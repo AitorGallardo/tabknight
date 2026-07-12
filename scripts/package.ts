@@ -40,6 +40,8 @@ const zipPath = join(releaseDir, `tabknight-v${version}.zip`);
 await rm(zipPath, { force: true });
 
 // Zip the contents of dist/ (cwd = dist) so manifest.json sits at the zip root.
+// The -x flags are a belt-and-braces guard only: config/build.ts's copyExcludes
+// is the source of truth for what stays out of dist/ (and therefore the zip).
 await run(["zip", "-r", zipPath, ".", "-x", ".DS_Store", "-x", "*/.DS_Store"], distDir);
 
 const size = Bun.file(zipPath).size;

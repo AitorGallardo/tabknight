@@ -157,6 +157,7 @@ Declared in [`public/manifest.json`](public/manifest.json) — each maps to a re
 | --- | --- |
 | `tabs` | Enumerate, activate, create, and close tabs; read titles/URLs/favicons |
 | `bookmarks` | Save and restore tab sets as bookmark folders |
+| `activeTab` | Keeps the overlay and thumbnail capture working on the current tab if you restrict site access to "when you click the extension" |
 | `scripting` | (Re)inject the content script on supported pages; read a page's media-session info (track title/artwork) for the audio panel |
 | `storage` | Hand off context between the background worker and the fallback UI; session-scoped visit counts |
 | `unlimitedStorage` | Room for the IndexedDB snapshot + thumbnail store |
