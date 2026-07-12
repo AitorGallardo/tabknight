@@ -1,6 +1,6 @@
 import { watch } from "fs";
 import { cp, rm, mkdir } from "fs/promises";
-import { join } from "path";
+import { basename, join } from "path";
 
 const isWatch = process.argv.includes("--watch");
 const rootDir = join(import.meta.dir, "..");
@@ -15,8 +15,15 @@ async function build() {
   await rm(distDir, { recursive: true, force: true });
   await mkdir(distDir, { recursive: true });
 
-  // Copy public files
-  await cp(publicDir, distDir, { recursive: true });
+  // Copy public files (skip source-only assets and OS cruft)
+  const copyExcludes = [
+    join(publicDir, "icons/icon_tab_knight.svg"),
+    join(publicDir, "icons/tabknight_icon.png"),
+  ];
+  await cp(publicDir, distDir, {
+    recursive: true,
+    filter: (src) => basename(src) !== ".DS_Store" && !copyExcludes.includes(src),
+  });
 
   // Build popup
   const popupResult = await Bun.build({

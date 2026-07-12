@@ -1,0 +1,43 @@
+name: Bug report
+description: Something broken or behaving unexpectedly
+labels: ["bug"]
+body:
+  - type: input
+    id: chrome-version
+    attributes:
+      label: Chrome version
+      description: Find it at chrome://settings/help
+      placeholder: "138.0.7204.100"
+    validations:
+      required: true
+  - type: input
+    id: extension-version
+    attributes:
+      label: TabKnight version
+      description: Shown on the extension card at chrome://extensions
+      placeholder: "0.26.0"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Press Cmd+K
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead. Screenshots welcome.
+    validations:
+      required: true
