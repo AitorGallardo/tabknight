@@ -4,6 +4,37 @@ All notable changes to TabKnight are documented in this file.
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.27.0] - 2026-07-13
+
+### Fixed
+
+- Closing a tab elsewhere now removes its row from an open overlay; activating
+  a just-closed tab shows "Couldn't reach tab" instead of silently failing.
+- Audio-mode selection is anchored to the tab, not the list position — a tab
+  that starts playing mid-navigation can no longer steal the selection.
+- Preview thumbnails revalidate against fresher captures instead of showing a
+  stale cached image for the whole session.
+- Holding Tab/Space/arrows no longer spams mode switches or play/pause.
+- The content script guards against double injection (overlay could flash
+  open-then-closed after a browser restart).
+- Orphaned standalone-preview data in storage is now swept (10-minute TTL).
+- The Cmd+K handler can no longer fail silently; unknown runtime messages
+  fail fast instead of hanging their sender.
+
+### Changed
+
+- The overlay's opening skeleton now hands off seamlessly to the loaded panel
+  (no more "Loading tabs…" flash); one motion system (single easing curve,
+  100ms hover feedback everywhere).
+- Selection changes show a neutral wash while the screenshot loads instead of
+  flashing a lower-quality tier first.
+- The audio pill shows a live equalizer; controls have pressed states; the
+  freshness dot pulses when a capture is seconds old; featured rows stagger in
+  on first open (all reduced-motion aware).
+- One copy voice across the product: sentence case, unified ellipsis,
+  "Couldn't …" error style; one keyboard-chip component; one focus-ring
+  treatment (and rings no longer fire on mouse clicks).
+
 ## [0.26.0] - 2026-07-12
 
 ### Added

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Search, X } from "lucide-react";
 import { Favicon } from "../components/Favicon";
+import { Kbd } from "../components/Kbd";
 import { activateTab, getAllTabs, openTabFromQuery } from "../lib/chrome-api";
 import { scoreTab } from "../lib/rank";
 import { useListNavigation } from "../hooks/useListNavigation";
@@ -81,7 +82,7 @@ export function TabNavigatorView({
 
         setTabs(normalized);
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load tabs");
+        setError(e instanceof Error ? e.message : "Couldn't load tabs");
       } finally {
         setLoading(false);
       }
@@ -214,8 +215,6 @@ export function TabNavigatorView({
     scrollInsets: SCROLL_INSETS,
   });
 
-  const kbdClass = "rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70";
-
   return (
     <div
       className="flex h-full w-full flex-col text-[#f4f5f8]"
@@ -337,10 +336,10 @@ export function TabNavigatorView({
 
       <div className="flex items-center justify-end gap-4 border-t border-white/[0.07] px-4 py-3 text-[11px] text-white/50">
         <span className="flex items-center gap-1.5">
-          <kbd className={kbdClass}>↵</kbd> Switch to tab
+          <Kbd>↵</Kbd> Switch to tab
         </span>
         <span className="flex items-center gap-1.5">
-          <kbd className={kbdClass}>esc</kbd> {query !== "" ? "Clear" : "Close"}
+          <Kbd>esc</Kbd> {query !== "" ? "Clear" : "Close"}
         </span>
       </div>
     </div>

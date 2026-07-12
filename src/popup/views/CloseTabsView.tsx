@@ -3,6 +3,7 @@ import { X, Copy, History, CheckCircle, RotateCcw } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { StatusMessage } from "../components/StatusMessage";
 import { TabItem } from "../components/TabItem";
+import { Kbd } from "../components/Kbd";
 import { useTabSelection } from "../hooks/useTabSelection";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useRovingCursor } from "../hooks/useRovingCursor";
@@ -66,7 +67,7 @@ export function CloseTabsView({ saveSummary, onComplete }: CloseTabsViewProps) {
       setClosedCount(tabIdsToClose.length);
       setClosed(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to close tabs");
+      setError(e instanceof Error ? e.message : "Couldn't close tabs");
       setClosing(false);
     }
   };
@@ -79,7 +80,7 @@ export function CloseTabsView({ saveSummary, onComplete }: CloseTabsViewProps) {
       await openUrlsAsTabs(urls);
       window.close();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to restore tabs");
+      setError(e instanceof Error ? e.message : "Couldn't restore tabs");
       setRestoring(false);
     }
   };
@@ -146,7 +147,7 @@ export function CloseTabsView({ saveSummary, onComplete }: CloseTabsViewProps) {
             className="w-full"
           >
             <RotateCcw className="h-3.5 w-3.5 mr-1" />
-            {restoring ? "Restoring..." : "Restore Tabs"}
+            {restoring ? "Restoring…" : "Restore Tabs"}
           </Button>
           <Button onClick={() => window.close()} className="w-full">
             Done
@@ -159,8 +160,6 @@ export function CloseTabsView({ saveSummary, onComplete }: CloseTabsViewProps) {
       </div>
     );
   }
-
-  const kbdClass = "rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70";
 
   return (
     <div className="flex flex-col h-full">
@@ -264,26 +263,26 @@ export function CloseTabsView({ saveSummary, onComplete }: CloseTabsViewProps) {
           >
             <X className="h-3.5 w-3.5 mr-1" />
             {closing
-              ? "Closing..."
+              ? "Closing…"
               : `Close ${selectedCount} Tab${selectedCount !== 1 ? "s" : ""}`}
           </Button>
         </div>
 
         <div className="flex items-center justify-end gap-4 text-[11px] text-white/50">
           <span className="flex items-center gap-1.5">
-            <kbd className={kbdClass}>↑↓</kbd> Move
+            <Kbd>↑↓</Kbd> Move
           </span>
           <span className="flex items-center gap-1.5">
-            <kbd className={kbdClass}>space</kbd> Select
+            <Kbd>space</Kbd> Select
           </span>
           <span className="flex items-center gap-1.5">
-            <kbd className={kbdClass}>↵</kbd> Close tabs
+            <Kbd>↵</Kbd> Close tabs
           </span>
           <span className="flex items-center gap-1.5">
-            <kbd className={kbdClass}>⌘A</kbd> Select all
+            <Kbd>⌘A</Kbd> Select all
           </span>
           <span className="flex items-center gap-1.5">
-            <kbd className={kbdClass}>esc</kbd> Keep open
+            <Kbd>esc</Kbd> Keep open
           </span>
         </div>
       </div>

@@ -29,7 +29,7 @@ export function TabItem({ tab, selected, onToggle, cursor = false, itemRef }: Ta
         className={cn(
           "h-4 w-4 shrink-0 rounded-[4px] border border-white/20 bg-white/[0.06]",
           "checked:bg-[#0a84ff] checked:border-[#0a84ff]",
-          "focus:ring-1 focus:ring-[#0a84ff]/40"
+          "focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0a84ff]/50"
         )}
       />
       <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md bg-white/[0.08] text-white/80">

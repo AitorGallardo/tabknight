@@ -119,7 +119,7 @@ export function OptionsView() {
             <button
               type="button"
               onClick={openShortcutsPage}
-              className="rounded-md border border-white/15 bg-white/[0.06] px-3 py-1.5 text-xs font-medium text-white/80 transition-colors hover:bg-white/[0.12] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0a84ff]"
+              className="rounded-md border border-white/15 bg-white/[0.06] px-3 py-1.5 text-xs font-medium text-white/80 transition-colors hover:bg-white/[0.12] focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0a84ff]/50"
             >
               Change
             </button>
@@ -144,14 +144,18 @@ export function OptionsView() {
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-white/55">
             <span>{stats ? stats.cards : "…"} cards</span>
             <span>{stats ? stats.thumbnails : "…"} thumbnails</span>
-            <span>~{formatBytes(stats?.approxBytes ?? null)} used</span>
+            <span>
+              {stats?.approxBytes != null
+                ? `~${formatBytes(stats.approxBytes)} used`
+                : "Storage size unavailable"}
+            </span>
           </div>
           <div className="mt-4 flex items-center gap-3">
             <button
               type="button"
               onClick={() => void handleClear()}
               disabled={clearing}
-              className="flex items-center gap-1.5 rounded-md border border-red-400/25 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-200 transition-colors hover:bg-red-500/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-400 disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-md border border-red-400/25 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-200 transition-colors hover:bg-red-500/20 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0a84ff]/50 disabled:opacity-50"
             >
               <Trash2 className="h-3.5 w-3.5" />
               Clear preview data

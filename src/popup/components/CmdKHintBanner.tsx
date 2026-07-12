@@ -39,6 +39,21 @@ export function CmdKHintBanner() {
     };
   }, []);
 
+  useEffect(() => {
+    const handleStorageChange = (
+      changes: { [key: string]: chrome.storage.StorageChange },
+      areaName: string
+    ) => {
+      if (areaName !== "local" || !(DISMISS_KEY in changes)) return;
+      setDismissed(!!changes[DISMISS_KEY].newValue);
+    };
+
+    chrome.storage.onChanged.addListener(handleStorageChange);
+    return () => {
+      chrome.storage.onChanged.removeListener(handleStorageChange);
+    };
+  }, []);
+
   const dismiss = () => {
     setDismissed(true);
     chrome.storage.local.set({ [DISMISS_KEY]: true }).catch(() => {});

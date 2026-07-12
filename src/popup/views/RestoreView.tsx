@@ -8,6 +8,7 @@ import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useRovingCursor } from "../hooks/useRovingCursor";
 import { getBookmarksInFolder, openUrlAsTab, openUrlsAsTabs } from "../lib/chrome-api";
 import { cn } from "../lib/cn";
+import { Kbd } from "../components/Kbd";
 
 interface RestoreViewProps {
   onBack: () => void;
@@ -45,7 +46,7 @@ export function RestoreView({ onBack }: RestoreViewProps) {
         }))
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load bookmarks");
+      setError(e instanceof Error ? e.message : "Couldn't load bookmarks");
       setBookmarks([]);
     } finally {
       setLoadingBookmarks(false);
@@ -69,7 +70,7 @@ export function RestoreView({ onBack }: RestoreViewProps) {
       await openUrlsAsTabs(urls);
       window.close();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to open tabs");
+      setError(e instanceof Error ? e.message : "Couldn't open tabs");
       setOpening(false);
     }
   };
@@ -95,8 +96,6 @@ export function RestoreView({ onBack }: RestoreViewProps) {
     onSaveWithModifier: !opening && bookmarks.length > 0 ? handleOpenAll : undefined,
     onClose: onBack,
   });
-
-  const kbdClass = "rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70";
 
   return (
     <div className="flex flex-col h-full">
@@ -162,23 +161,23 @@ export function RestoreView({ onBack }: RestoreViewProps) {
             className="flex-1"
           >
             {opening
-              ? "Opening..."
+              ? "Opening…"
               : `Open ${bookmarks.length} Tab${bookmarks.length !== 1 ? "s" : ""}`}
           </Button>
         </div>
 
         <div className="flex items-center justify-end gap-4 text-[11px] text-white/50">
           <span className="flex items-center gap-1.5">
-            <kbd className={kbdClass}>↑↓</kbd> Move
+            <Kbd>↑↓</Kbd> Move
           </span>
           <span className="flex items-center gap-1.5">
-            <kbd className={kbdClass}>↵</kbd> Open
+            <Kbd>↵</Kbd> Open
           </span>
           <span className="flex items-center gap-1.5">
-            <kbd className={kbdClass}>⌘↵</kbd> Open all
+            <Kbd>⌘↵</Kbd> Open all
           </span>
           <span className="flex items-center gap-1.5">
-            <kbd className={kbdClass}>esc</kbd> Back
+            <Kbd>esc</Kbd> Back
           </span>
         </div>
       </div>
