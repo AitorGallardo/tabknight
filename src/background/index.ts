@@ -14,6 +14,7 @@ import type {
   MediaControlResult,
   MediaSessionInfo,
   MediaStatusResult,
+  TabRemovedMessage,
 } from "../popup/lib/preview/types";
 
 async function injectContentScriptIntoOpenTabs(): Promise<void> {
@@ -168,6 +169,14 @@ async function readMediaSession(tabId: number): Promise<MediaSessionInfo | undef
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   mediaSessionCache.delete(tabId);
+
+  // Best-effort broadcast so any open overlay/standalone view can drop the
+  // tab from its list immediately, mirroring AUDIBLE_STATE_CHANGED's pattern.
+  chrome.runtime
+    .sendMessage({ type: "TAB_REMOVED", tabId } satisfies TabRemovedMessage)
+    .catch(() => {
+      // No extension page is listening (overlay closed) — best-effort.
+    });
 });
 
 // Passive poll for the "now playing" media block — unlike forwardMediaControl,
@@ -186,11 +195,40 @@ async function forwardMediaStatus(tabId: number): Promise<MediaStatusResult> {
   }
 }
 
+// Every standalone context is stored under a "preview-" prefixed key (already
+// recognizable/distinct from other storage.local keys) and carries a full-page
+// PNG data URL. It's only deleted when the standalone tab's React app reads
+// it — if that tab is closed before it loads, the entry orphans forever. Sweep
+// anything older than this on each standalone open and on startup.
+const STANDALONE_CONTEXT_PREFIX = "preview-";
+const STANDALONE_CONTEXT_MAX_AGE_MS = 10 * 60 * 1000;
+
+async function sweepStaleStandaloneContexts(): Promise<void> {
+  try {
+    const all = await chrome.storage.local.get(null);
+    const now = Date.now();
+    const staleKeys = Object.entries(all)
+      .filter(([key, value]) => {
+        if (!key.startsWith(STANDALONE_CONTEXT_PREFIX)) return false;
+        const createdAt = (value as { createdAt?: number } | null | undefined)?.createdAt;
+        return typeof createdAt === "number" && now - createdAt > STANDALONE_CONTEXT_MAX_AGE_MS;
+      })
+      .map(([key]) => key);
+    if (staleKeys.length > 0) {
+      await chrome.storage.local.remove(staleKeys);
+    }
+  } catch {
+    // Best-effort — an orphaned context just gets swept on a later pass.
+  }
+}
+
 // Restricted pages (chrome://, the Web Store, …) can't host the overlay, so we
 // open the preview in a standalone tab and capture the source tab's screenshot
 // to use as a blurred backdrop.
 async function openStandalonePreview(sourceTab?: chrome.tabs.Tab): Promise<void> {
-  const contextId = `preview-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  void sweepStaleStandaloneContexts();
+
+  const contextId = `${STANDALONE_CONTEXT_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   let backgroundImage: string | undefined;
 
   if (sourceTab?.windowId !== undefined) {
@@ -212,7 +250,7 @@ async function openStandalonePreview(sourceTab?: chrome.tabs.Tab): Promise<void>
     },
   });
 
-  const params = new URLSearchParams({ standalone: "1", view: "preview", context: contextId });
+  const params = new URLSearchParams({ standalone: "1", context: contextId });
 
   await chrome.tabs.create({
     url: chrome.runtime.getURL(`popup/index.html?${params.toString()}`),
@@ -233,9 +271,11 @@ const MIN_CAPTURE_INTERVAL = 3000;
 // thumbnail is this stale — repeatedly toggling Cmd+K should not spam captures.
 const OVERLAY_OPEN_STALE_THRESHOLD = 30000;
 const lastCaptureAt = new Map<number, number>();
-// captureVisibleTab captures the active tab of a given window, so mutual
-// exclusion only needs to be per-window — a global lock would starve every
-// window but the first that requests a capture at the same time.
+// Chrome's captureVisibleTab rate limit is per-profile, not per-window — but
+// captureVisibleTab itself only ever captures the active tab of a given
+// window, so mutual exclusion here only needs to be per-window — a global
+// lock would starve every window but the first that requests a capture at
+// the same time.
 const captureInFlightWindows = new Set<number>();
 
 async function maybeCapture(
@@ -356,6 +396,7 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.runtime.onStartup.addListener(() => {
   void injectContentScriptIntoOpenTabs();
+  void sweepStaleStandaloneContexts();
 });
 
 // Update badge when tabs change
@@ -417,26 +458,56 @@ async function markCmdKHintDismissed(): Promise<void> {
 chrome.commands.onCommand.addListener(async (command) => {
   if (command !== "open_tab_navigator") return;
 
-  const [activeTab] = await chrome.tabs.query({
-    active: true,
-    currentWindow: true,
-  });
+  let activeTab: chrome.tabs.Tab | undefined;
+  let attemptedStandalone = false;
 
-  void maybeCaptureOnOverlayOpen(activeTab);
+  try {
+    [activeTab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
 
-  if (activeTab?.id !== undefined) {
-    const opened = await ensureAndTogglePreview(activeTab.id);
-    if (opened) {
-      await markCmdKHintDismissed();
-      return;
+    void maybeCaptureOnOverlayOpen(activeTab);
+
+    if (activeTab?.id !== undefined) {
+      const opened = await ensureAndTogglePreview(activeTab.id);
+      if (opened) {
+        await markCmdKHintDismissed();
+        return;
+      }
+    }
+
+    attemptedStandalone = true;
+    await openStandalonePreview(activeTab);
+    await markCmdKHintDismissed();
+  } catch {
+    // Never let the shortcut produce an unhandled rejection. If we haven't
+    // tried the standalone fallback yet, attempt it once more as a last
+    // resort; otherwise there's nothing left to do but swallow the error.
+    if (attemptedStandalone) return;
+    try {
+      await openStandalonePreview(activeTab);
+    } catch {
+      // Swallow — best-effort.
     }
   }
-
-  await openStandalonePreview(activeTab);
-  await markCmdKHintDismissed();
 });
 
+// Messages this listener actually responds to. Anything else must return
+// `false` synchronously — returning `true` unconditionally kept Chrome's
+// message port open for senders of unrecognized types, whose sendResponse
+// was never called, leaving their promise hanging forever.
+const HANDLED_MESSAGE_TYPES = new Set([
+  "PREVIEW_CARD_CAPTURE",
+  "PREVIEW_REQUEST_CAPTURE",
+  "PREVIEW_FALLBACK_STANDALONE",
+  "MEDIA_CONTROL_REQUEST",
+  "MEDIA_STATUS_REQUEST",
+]);
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!HANDLED_MESSAGE_TYPES.has(message?.type)) return false;
+
   const handle = async () => {
     if (message?.type === "PREVIEW_CARD_CAPTURE") {
       const card = message.card as ContentCard | undefined;

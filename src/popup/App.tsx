@@ -18,7 +18,7 @@ interface StandaloneContext {
 
 export function App() {
   const searchParams = new URLSearchParams(window.location.search);
-  const isStandaloneNavigator = searchParams.get("standalone") === "1";
+  const isStandalonePreview = searchParams.get("standalone") === "1";
   const isOverlay = searchParams.get("overlay") === "1";
   // options.html is a distinct file (not a query param on index.html) so the
   // options_ui manifest entry never depends on whether Chrome preserves a
@@ -30,7 +30,7 @@ export function App() {
   const [standaloneContext, setStandaloneContext] = useState<StandaloneContext | null>(null);
 
   useEffect(() => {
-    if (!isStandaloneNavigator || !contextId) return;
+    if (!isStandalonePreview || !contextId) return;
 
     let cancelled = false;
 
@@ -50,7 +50,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [contextId, isStandaloneNavigator]);
+  }, [contextId, isStandalonePreview]);
 
   useEffect(() => {
     if (!isOverlay) return;
@@ -92,7 +92,7 @@ export function App() {
     );
   }
 
-  if (isStandaloneNavigator) {
+  if (isStandalonePreview) {
     return (
       <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#05060a] p-4">
         {standaloneContext?.backgroundImage && (

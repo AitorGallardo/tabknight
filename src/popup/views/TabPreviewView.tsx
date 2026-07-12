@@ -10,10 +10,12 @@ import type {
   MediaControlResult,
   MediaStatusRequestMessage,
   MediaStatusResult,
+  TabRemovedMessage,
   TabThumbnail,
 } from "../lib/preview/types";
 import { AudioEq } from "../components/AudioEq";
 import { Favicon } from "../components/Favicon";
+import { Kbd } from "../components/Kbd";
 import { scoreTab } from "../lib/rank";
 import { useListNavigation } from "../hooks/useListNavigation";
 
@@ -206,10 +208,14 @@ function RowGlyphs({ tab, currentWindowId, active }: { tab: NavigatorTab; curren
 /** Tier-2-only freshness chip: green dot + relative time while recent, dims after STALE_LABEL_MS. */
 function FreshnessChip({ capturedAt, now }: { capturedAt: number; now: number }) {
   const fresh = now - capturedAt < STALE_LABEL_MS;
+  const label = relativeTime(capturedAt, now);
+  const justNow = label === "just now";
   return (
     <span className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-black/45 px-2 py-0.5 text-[10px] font-medium text-white/80 backdrop-blur-md ring-1 ring-white/10">
-      <span className={`h-1.5 w-1.5 rounded-full ${fresh ? "bg-[#30d158]" : "bg-white/40"}`} />
-      <span className={fresh ? undefined : "text-white/50"}>{relativeTime(capturedAt, now)}</span>
+      <span
+        className={`h-1.5 w-1.5 rounded-full ${fresh ? "bg-[#30d158]" : "bg-white/40"} ${justNow ? "tk-pulse" : ""}`}
+      />
+      <span className={fresh ? undefined : "text-white/50"}>{label}</span>
     </span>
   );
 }
@@ -326,6 +332,14 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   // Tabs-mode selection to restore when coming back from audio mode.
   const rememberedTabId = useRef<number | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  // Gates the featured-rail entrance stagger (tk-row-in) to the very first
+  // paint that has real rows — flips false once loading finishes, so a later
+  // re-rank (search, activation) never replays the stagger.
+  const initialFeaturedMountRef = useRef(true);
+  useEffect(() => {
+    if (loading) return;
+    initialFeaturedMountRef.current = false;
+  }, [loading]);
   // Session-sticky membership — once a tab is audible/muted while the overlay
   // is open, its row stays until the overlay closes (it just flips to paused).
   const [audioTabIds, setAudioTabIds] = useState<Set<number>>(new Set());
@@ -412,9 +426,27 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
 
   useEffect(() => {
     inputRef.current?.focus();
-    // Tell the host content script the iframe rendered (cancels its CSP fallback).
-    if (overlay) postToParent("ready");
   }, [overlay]);
+
+  // Tell the host content script the iframe rendered (cancels its CSP
+  // fallback + kills the host-page shimmer). Gated on tabs actually being
+  // ready so the shimmer hands off to real content, not a bare "Loading
+  // tabs…" flash; a safety timeout fires anyway if loading gets stuck, well
+  // before the host's own 4000ms teardown.
+  const readySentRef = useRef(false);
+  useEffect(() => {
+    if (!overlay || readySentRef.current) return;
+    if (!loading) {
+      readySentRef.current = true;
+      postToParent("ready");
+      return;
+    }
+    const timer = setTimeout(() => {
+      readySentRef.current = true;
+      postToParent("ready");
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [overlay, loading]);
 
   // Grow the sticky audio set / seed playback state whenever a tab becomes
   // audible or muted (initial load, or the live-update effect below).
@@ -443,9 +475,48 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   // debounce audible->false so transient flaps don't flicker a row to paused.
   useEffect(() => {
     const onMessage = (message: unknown) => {
-      const msg = message as Partial<AudibleStateChangedMessage>;
-      if (!msg || msg.type !== "AUDIBLE_STATE_CHANGED" || typeof msg.tabId !== "number") return;
-      const { tabId, audible, muted } = msg;
+      const msg = message as Partial<AudibleStateChangedMessage> | Partial<TabRemovedMessage>;
+      if (!msg || typeof msg.tabId !== "number") return;
+      const { tabId } = msg;
+
+      // Background best-effort broadcast when a tab closes elsewhere — prune
+      // every piece of per-tab state so a closed tab can't linger in the
+      // audio rail or leave a stale timer running.
+      if (msg.type === "TAB_REMOVED") {
+        setTabs((prev) => prev.filter((t) => t.id !== tabId));
+        setAudioTabIds((prev) => {
+          if (!prev.has(tabId)) return prev;
+          const next = new Set(prev);
+          next.delete(tabId);
+          return next;
+        });
+        setPlayback((prev) => {
+          if (!prev.has(tabId)) return prev;
+          const next = new Map(prev);
+          next.delete(tabId);
+          return next;
+        });
+        setRowHints((prev) => {
+          if (!(tabId in prev)) return prev;
+          const next = { ...prev };
+          delete next[tabId];
+          return next;
+        });
+        const pauseTimer = pauseTimers.current.get(tabId);
+        if (pauseTimer) {
+          clearTimeout(pauseTimer);
+          pauseTimers.current.delete(tabId);
+        }
+        const hintTimer = hintTimers.current.get(tabId);
+        if (hintTimer) {
+          clearTimeout(hintTimer);
+          hintTimers.current.delete(tabId);
+        }
+        return;
+      }
+
+      if (msg.type !== "AUDIBLE_STATE_CHANGED") return;
+      const { audible, muted } = msg;
 
       setTabs((prev) => {
         const idx = prev.findIndex((t) => t.id === tabId);
@@ -585,6 +656,44 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
 
   // Keyboard navigation indexes into whichever list is on screen.
   const displayList = mode === "audio" ? audioList : orderedTabs;
+
+  // Identity re-anchoring: `activeIndex` is a raw index into `displayList`,
+  // but the list can reshuffle out from under it — e.g. a tab newly going
+  // audible is inserted at the front of audioList — silently pointing the
+  // index at the wrong tab (Enter would activate/toggle the wrong row).
+  // `selectedIdRef` tracks which tab id the index is *supposed* to mean;
+  // this runs after every render (no dep array, same idiom as
+  // useRovingCursor's prevKeysRef) so it both re-anchors on a pure identity
+  // shift and stays synced when the index moves for any other reason.
+  // Query changes and mode switches (Tab key / session restore) already pick
+  // their own target index elsewhere — those are left alone here (skipped
+  // via queryChanged/modeChanged) so this never fights that logic.
+  const selectedIdRef = useRef<number | null>(displayList[activeIndex]?.id ?? null);
+  const prevDisplayKeysRef = useRef<number[]>(displayList.map((tab) => tab.id));
+  const prevModeRef = useRef(mode);
+  const prevQueryRef = useRef(query);
+  useEffect(() => {
+    const currentKeys = displayList.map((tab) => tab.id);
+    const modeChanged = prevModeRef.current !== mode;
+    const queryChanged = prevQueryRef.current !== query;
+    const keysChanged =
+      prevDisplayKeysRef.current.length !== currentKeys.length ||
+      prevDisplayKeysRef.current.some((key, i) => key !== currentKeys[i]);
+
+    prevModeRef.current = mode;
+    prevQueryRef.current = query;
+    prevDisplayKeysRef.current = currentKeys;
+
+    let nextIndex = activeIndex;
+    if (!modeChanged && !queryChanged && keysChanged) {
+      const id = selectedIdRef.current;
+      const found = id !== null ? currentKeys.indexOf(id) : -1;
+      nextIndex = found >= 0 ? found : Math.max(0, Math.min(activeIndex, currentKeys.length - 1));
+    }
+
+    selectedIdRef.current = currentKeys[nextIndex] ?? null;
+    if (nextIndex !== activeIndex) setActiveIndex(nextIndex);
+  });
 
   const activeTabItem = displayList[activeIndex];
   const activeCard = activeTabItem ? cards.get(hashUrl(activeTabItem.url)) : undefined;
@@ -731,17 +840,27 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     }
   }, []);
 
+  // True while the Tier-2 read for the current selection hasn't resolved
+  // yet (cache miss + in-flight DB read). While pending, the hero renders a
+  // plain color wash instead of committing to og:image/typographic, so a row
+  // with a thumbnail never flashes a lower tier before the read comes back —
+  // see thumbTier/heroTier below.
+  const [thumbPending, setThumbPending] = useState(false);
+
   const activeUrl = activeTabItem?.url;
   useEffect(() => {
-    // Clear synchronously on selection change so the tiered fallback
-    // (og:image -> favicon) shows for the new tab instead of the previous
-    // tab's stale screenshot while the debounced fetch is pending.
+    // Clear synchronously on selection change so a stale screenshot never
+    // lingers under the new tab's row; heroTier falls back to the neutral
+    // "pending" wash (not og:image/typographic) until a record — or a
+    // confirmed absence of one — comes back.
+    setThumbPending(true);
     setThumb((prev) => {
       if (prev) URL.revokeObjectURL(prev.url);
       return null;
     });
 
     if (!activeUrl) {
+      setThumbPending(false);
       return;
     }
 
@@ -750,6 +869,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
 
     const applyRecord = (record: TabThumbnail | undefined) => {
       if (thumbRequestRef.current !== requestId) return; // superseded by a newer selection
+      setThumbPending(false);
       setThumb((prev) => {
         if (prev) URL.revokeObjectURL(prev.url);
         return record
@@ -770,6 +890,18 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     const cached = cacheGetThumb(urlHash);
     if (cached) {
       applyRecord(cached);
+      // The cache is a point-in-time LRU snapshot — a fresher capture may
+      // already be sitting in IndexedDB (e.g. a scroll-settle screenshot
+      // landed after this entry was warmed). Revalidate in the background;
+      // applyRecord's requestId guard makes this a no-op if the selection
+      // has moved on by the time it resolves.
+      getThumbnail(urlHash)
+        .then((fresh) => {
+          if (!fresh || fresh.capturedAt <= cached.capturedAt) return;
+          cacheSetThumb(urlHash, fresh);
+          applyRecord(fresh);
+        })
+        .catch(() => {});
       return;
     }
 
@@ -779,7 +911,9 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           if (record) cacheSetThumb(urlHash, record);
           applyRecord(record);
         })
-        .catch(() => {});
+        .catch(() => {
+          if (thumbRequestRef.current === requestId) setThumbPending(false);
+        });
     }, THUMB_DEBOUNCE_MS);
 
     return () => clearTimeout(timer);
@@ -897,15 +1031,20 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   const preferOgOverLegacyThumb =
     !!thumb && (thumb.width === undefined || thumb.width < LEGACY_THUMB_MIN_WIDTH) && !!ogImage;
 
-  const heroTier: "artwork" | "thumb-cover" | "thumb-contain" | "og-cover" | "typographic" = artworkUrl
+  // While a Tier-2 read is still pending, hold at a neutral wash rather than
+  // committing to og:image/typographic — those are only the right call once
+  // we know for sure there's no thumbnail (see thumbPending above).
+  const heroTier: "artwork" | "thumb-cover" | "thumb-contain" | "og-cover" | "typographic" | "pending" = artworkUrl
     ? "artwork"
-    : preferOgOverLegacyThumb
-      ? "og-cover"
-      : thumbTier
-        ? thumbTier
-        : ogImage
-          ? "og-cover"
-          : "typographic";
+    : thumbPending
+      ? "pending"
+      : preferOgOverLegacyThumb
+        ? "og-cover"
+        : thumbTier
+          ? thumbTier
+          : ogImage
+            ? "og-cover"
+            : "typographic";
 
   const handleOgImageLoad = useCallback(
     (event: SyntheticEvent<HTMLImageElement>) => {
@@ -962,15 +1101,6 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     [overlay, returnToTabId]
   );
 
-  const activate = useCallback(
-    async (tab: NavigatorTab | undefined) => {
-      if (!tab) return;
-      await activateTab(tab.id, tab.windowId);
-      await dismiss(false);
-    },
-    [dismiss]
-  );
-
   const showRowHint = useCallback((tabId: number, message: string) => {
     setRowHints((prev) => ({ ...prev, [tabId]: message }));
     const existingTimer = hintTimers.current.get(tabId);
@@ -986,6 +1116,23 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     }, HINT_MS);
     hintTimers.current.set(tabId, timer);
   }, []);
+
+  const activate = useCallback(
+    async (tab: NavigatorTab | undefined) => {
+      if (!tab) return;
+      try {
+        await activateTab(tab.id, tab.windowId);
+      } catch {
+        // Tab likely closed between render and click — leave the overlay up
+        // (an unhandled rejection here used to make the click a dead no-op).
+        setAnnouncement(`Couldn't reach ${tab.title}`);
+        showRowHint(tab.id, "Couldn't reach tab");
+        return;
+      }
+      await dismiss(false);
+    },
+    [dismiss, showRowHint]
+  );
 
   const sendPlayToggle = useCallback(
     async (tab: NavigatorTab) => {
@@ -1005,16 +1152,16 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
 
         if (result.error === "autoplay-blocked") {
           setAnnouncement("Playback blocked — click the tab to resume");
-          showRowHint(tab.id, "click the tab to resume");
+          showRowHint(tab.id, "Click the tab to resume");
         } else if (result.ok === false) {
           setAnnouncement(`Couldn't reach ${tab.title}`);
-          showRowHint(tab.id, "couldn't reach tab");
+          showRowHint(tab.id, "Couldn't reach tab");
         } else {
           setAnnouncement(result.playing ? `Playing ${tab.title}` : `Paused ${tab.title}`);
         }
       } catch {
         setAnnouncement(`Couldn't reach ${tab.title}`);
-        showRowHint(tab.id, "couldn't reach tab");
+        showRowHint(tab.id, "Couldn't reach tab");
       }
     },
     [showRowHint]
@@ -1028,7 +1175,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
       void setTabMuted(tab.id, nextMuted).catch(() => {
         setTabs((prev) => prev.map((t) => (t.id === tab.id ? { ...t, muted: !nextMuted } : t)));
         setAnnouncement(`Couldn't reach ${tab.title}`);
-        showRowHint(tab.id, "couldn't reach tab");
+        showRowHint(tab.id, "Couldn't reach tab");
       });
     },
     [showRowHint]
@@ -1081,6 +1228,9 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   // Backspace-to-back all live outside the generic list-navigation machinery.
   const preKeyDown = useCallback(
     (event: KeyboardEvent): boolean => {
+      // A held key firing repeat events would otherwise flap mode (remount
+      // flicker on Tab) or race toggles (Space); consume without acting.
+      if (event.repeat) return true;
       if (event.key === "Tab") {
         event.preventDefault();
         if (mode === "tabs") enterAudioMode();
@@ -1123,37 +1273,36 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   const showBuckets = query.trim().length === 0;
   let lastBucket = "";
 
-  const kbdClass = "rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70";
   const footer =
     mode === "audio" ? (
       <div className="flex items-center justify-end gap-4 border-t border-white/[0.07] px-6 py-3 text-[11px] text-white/50">
         <span className="flex items-center gap-1.5">
-          <kbd className={kbdClass}>space</kbd> play/pause
+          <Kbd>space</Kbd> Play/pause
         </span>
         <span className="flex items-center gap-1.5">
-          <kbd className={kbdClass}>←/→</kbd> mute
+          <Kbd>←/→</Kbd> Mute
         </span>
         <span className="flex items-center gap-1.5">
-          <kbd className={kbdClass}>↵</kbd> Switch to tab
+          <Kbd>↵</Kbd> Switch to tab
         </span>
         <span className="flex items-center gap-1.5">
-          <kbd className={kbdClass}>tab</kbd> tabs
+          <Kbd>tab</Kbd> Tabs
         </span>
         <span className="flex items-center gap-1.5">
-          <kbd className={kbdClass}>esc</kbd> {query !== "" ? "clear" : "back"}
+          <Kbd>esc</Kbd> {query !== "" ? "Clear" : "Back"}
         </span>
       </div>
     ) : (
       <div className="flex items-center justify-end gap-4 border-t border-white/[0.07] px-6 py-3 text-[11px] text-white/50">
         <span className="flex items-center gap-1.5">
-          <kbd className={kbdClass}>↵</kbd> Switch to tab
+          <Kbd>↵</Kbd> Switch to tab
         </span>
         <span className="flex items-center gap-1.5">
-          <kbd className={kbdClass}>esc</kbd> {query !== "" ? "Clear" : "Close"}
+          <Kbd>esc</Kbd> {query !== "" ? "Clear" : "Close"}
         </span>
         {playingCount > 0 && (
           <span className="flex items-center gap-1.5">
-            <kbd className={kbdClass}>tab</kbd> ♪
+            <Kbd>tab</Kbd> ♪
           </span>
         )}
       </div>
@@ -1188,7 +1337,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
             <button
               type="button"
               onClick={() => (mode === "audio" ? enterTabsMode() : enterAudioMode())}
-              className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors ${
+              className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors active:scale-[0.97] ${
                 mode === "audio"
                   ? "bg-[#0a84ff]/20 text-[#5eaeff] ring-1 ring-[#0a84ff]/40"
                   : "bg-white/[0.08] text-white/70 hover:bg-white/[0.12]"
@@ -1196,14 +1345,16 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
               aria-label={`${playingCount} tab${playingCount === 1 ? "" : "s"} playing audio — toggle audio panel`}
               aria-pressed={mode === "audio"}
             >
-              <span aria-hidden="true">♪</span>
+              <span className="scale-[0.8]" aria-hidden="true">
+                <AudioEq playing />
+              </span>
               {playingCount} playing
             </button>
           )}
           <button
             type="button"
             onClick={() => void dismiss(true)}
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-white/55 transition-colors hover:bg-white/[0.12] hover:text-white/80"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-white/55 transition-colors active:scale-[0.97] hover:bg-white/[0.12] hover:text-white/80"
             aria-label="Close preview"
           >
             <X className="h-3.5 w-3.5" />
@@ -1215,19 +1366,19 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           role="listbox"
           aria-label={mode === "audio" ? "Tabs playing audio" : "Open tabs"}
           aria-activedescendant={activeTabItem ? `tk-row-${activeTabItem.id}` : undefined}
-          className="min-h-0 flex-1 overflow-auto px-2 py-2"
+          className="min-h-0 flex-1 overflow-auto overscroll-contain px-2 py-2"
         >
           <div key={mode} className="tk-mode-fade space-y-0.5">
           {mode === "audio" ? (
             <>
               <div className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-white/30">
-                Now Playing
+                Now playing
               </div>
               {audioList.length === 0 && (
                 <div className="flex flex-col items-center gap-2 px-4 py-12 text-center">
                   <Music className="h-6 w-6 text-white/25" />
                   <div className="text-xs text-white/45">No tabs are playing audio</div>
-                  <div className="text-[11px] text-white/30">press Tab to go back</div>
+                  <div className="text-[11px] text-white/30">Press Tab to go back</div>
                 </div>
               )}
               {audioList.map((tab, index) => {
@@ -1283,12 +1434,12 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                             : `Play ${tab.title}`
                       }
                       aria-disabled={uncontrollable}
-                      title={uncontrollable ? "mute only" : undefined}
+                      title={uncontrollable ? "Mute only" : undefined}
                       onClick={(event) => {
                         event.stopPropagation();
                         if (!uncontrollable) void sendPlayToggle(tab);
                       }}
-                      className={`grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-white/70 transition-colors hover:bg-white/[0.12] ${
+                      className={`grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-white/70 transition-colors active:scale-90 hover:bg-white/[0.12] ${
                         uncontrollable ? "cursor-not-allowed opacity-40" : "cursor-pointer"
                       }`}
                     >
@@ -1303,7 +1454,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                         event.stopPropagation();
                         toggleMute(tab);
                       }}
-                      className="grid h-7 w-7 shrink-0 cursor-pointer place-items-center rounded-full bg-white/[0.06] text-white/70 transition-colors hover:bg-white/[0.12]"
+                      className="grid h-7 w-7 shrink-0 cursor-pointer place-items-center rounded-full bg-white/[0.06] text-white/70 transition-colors active:scale-90 hover:bg-white/[0.12]"
                     >
                       {tab.muted ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
                     </span>
@@ -1313,7 +1464,16 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
             </>
           ) : (
             <>
-              {loading && <div className="px-3 py-2 text-xs text-white/60">Loading tabs…</div>}
+              {loading && (
+                <div aria-hidden="true">
+                  {[0, 1, 2].map((i) => (
+                    <div key={i} className="flex items-center gap-2.5 rounded-[10px] px-2.5 py-1.5">
+                      <span className="tk-skeleton h-6 w-6 shrink-0 rounded-md" />
+                      <span className="tk-skeleton h-3 flex-1 rounded" />
+                    </div>
+                  ))}
+                </div>
+              )}
               {!loading && orderedTabs.length === 0 && (
                 <div className="px-3 py-2 text-xs text-white/55">
                   {query.trim() ? "No matching tabs" : "No other tabs open"}
@@ -1340,6 +1500,11 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
 
                   const active = index === activeIndex;
                   const isDuplicateTitle = (duplicateTitleCounts.get(tab.title) ?? 0) > 1;
+                  // Entrance stagger only on the featured rail's first-ever
+                  // paint (never on re-rank) and only the first 8 rows, so a
+                  // long "Recent" + "Most visited" combo doesn't tail off
+                  // into a long, sluggish-feeling delay chain.
+                  const showEntrance = isFeatured && initialFeaturedMountRef.current && index < 8;
 
                   return (
                     <div key={tab.id}>
@@ -1356,15 +1521,16 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                         type="button"
                         onMouseEnter={() => setActiveIndex(index)}
                         onClick={() => void activate(tab)}
-                        style={
-                          orderedTabs.length > CONTENT_VISIBILITY_THRESHOLD
+                        style={{
+                          ...(orderedTabs.length > CONTENT_VISIBILITY_THRESHOLD
                             ? {
                                 contentVisibility: "auto",
                                 containIntrinsicSize: isDuplicateTitle ? ROW_CONTAIN_SIZE_DUPLICATE : ROW_CONTAIN_SIZE,
                               }
-                            : undefined
-                        }
-                        className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${
+                            : undefined),
+                          ...(showEntrance ? { animationDelay: `${index * 18}ms` } : undefined),
+                        }}
+                        className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${showEntrance ? "tk-row-in" : ""} ${
                           active
                             ? "bg-[#0a84ff] text-white"
                             : isFeatured
@@ -1405,10 +1571,18 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
         <div key={mode} className="tk-mode-fade flex min-h-0 flex-1 flex-col">
         {!activeTabItem ? (
           <div className="flex h-full min-h-0 flex-col">
-            <div className="grid flex-1 place-items-center text-sm text-white/40">
-              {mode === "audio" && audioList.length === 0 ? "Nothing playing right now" : "Select a tab to preview"}
-            </div>
-            {footer}
+            {loading ? (
+              // Nothing but the panel chrome while tabs are still loading —
+              // no placeholder copy to flash before the first real row lands.
+              <div className="flex-1" />
+            ) : (
+              <>
+                <div className="grid flex-1 place-items-center text-sm text-white/40">
+                  {mode === "audio" && audioList.length === 0 ? "Nothing playing right now" : "Select a tab to preview"}
+                </div>
+                {footer}
+              </>
+            )}
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col">
@@ -1487,11 +1661,19 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                     <HeroTopScrim />
                   </>
                 )}
+                {heroTier === "pending" && (
+                  <div
+                    className="h-full w-full"
+                    style={{
+                      background: `linear-gradient(155deg, ${activeCard?.themeColor ?? "#1c1c1e"}33 0%, rgba(10,10,12,0.6) 70%)`,
+                    }}
+                  />
+                )}
                 {heroTier === "typographic" && <HeroTypographicCard tab={activeTabItem} card={activeCard} />}
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-auto px-6 py-5">
+            <div className="min-h-0 flex-1 overflow-auto overscroll-contain px-6 py-5">
               <div className="mb-1 flex items-center gap-2 text-[11px] text-white/45">
                 <span className="truncate">{activeCard?.siteName || domainOf(activeTabItem.url)}</span>
                 {heroTier !== "thumb-cover" && heroTier !== "thumb-contain" && activeCard?.capturedAt && (

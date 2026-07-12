@@ -91,6 +91,65 @@
   }
 }
 
+/* Tab-preview overlay motion token: the one easing curve every overlay
+   transition should route through (matches the host content-script's own
+   panel-scale easing in src/content/index.ts, PREVIEW_MOTION_MS). */
+:root {
+  --tk-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Left-rail loading skeleton (tabs mode only) — mirrors the host content
+   script's own pre-iframe skeleton shimmer (.tkp-skel-row / tkp-shimmer in
+   src/content/index.ts) so the hand-off from host skeleton to in-view
+   skeleton to real rows reads as one continuous animation, not a reset. */
+.tk-skeleton {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.05));
+  background-size: 200% 100%;
+  animation: tk-skeleton-shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes tk-skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* Freshness chip dot: pulses only while the capture is "just now" — a quiet
+   signal that the thumbnail is still live-fresh, not a permanent tic. */
+@keyframes tk-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.tk-pulse {
+  animation: tk-pulse 2s ease-in-out infinite;
+}
+
+/* Featured-rail entrance stagger — first paint of Recent/Most visited rows
+   only (see initialFeaturedMountRef in TabPreviewView). */
+@keyframes tk-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tk-row-in {
+  animation: tk-row-in 160ms var(--tk-ease) both;
+}
+
 /* Audio Playground equalizer (tab-preview overlay, audio mode) */
 @keyframes tk-eq {
   0%,
@@ -126,7 +185,7 @@
 }
 
 .tk-hero-fade {
-  animation: tk-hero-fade 150ms ease-out;
+  animation: tk-hero-fade 150ms var(--tk-ease);
 }
 
 /* Generic view/mode cross-fade: tab-preview overlay's tabs <-> audio mode
@@ -143,7 +202,14 @@
 }
 
 .tk-mode-fade {
-  animation: tk-mode-fade 120ms ease-out;
+  animation: tk-mode-fade 120ms var(--tk-ease);
+}
+
+/* Snappy color/background transitions across the overlay (rows, pills,
+   buttons) — kept outside the reduced-motion block below since it's a speed
+   tweak, not motion to suppress. */
+.transition-colors {
+  transition-duration: 100ms;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -160,8 +226,17 @@
     animation: none !important;
   }
 
-  .transition-colors {
-    transition-duration: 100ms;
+  .tk-skeleton {
+    animation: none !important;
+  }
+
+  .tk-pulse {
+    animation: none !important;
+    opacity: 1 !important;
+  }
+
+  .tk-row-in {
+    animation: none !important;
   }
 }
 

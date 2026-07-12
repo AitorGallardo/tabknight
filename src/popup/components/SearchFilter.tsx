@@ -11,7 +11,7 @@ interface SearchFilterProps {
 export function SearchFilter({
   value,
   onChange,
-  placeholder = "Search tabs...",
+  placeholder = "Search tabs…",
 }: SearchFilterProps) {
   const [localValue, setLocalValue] = useState(value);
 

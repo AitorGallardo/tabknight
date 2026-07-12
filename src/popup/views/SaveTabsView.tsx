@@ -7,6 +7,7 @@ import { SearchFilter } from "../components/SearchFilter";
 import { BulkActions } from "../components/BulkActions";
 import { FolderPicker } from "../components/FolderPicker";
 import { StatusMessage } from "../components/StatusMessage";
+import { Kbd } from "../components/Kbd";
 import { useTabs } from "../hooks/useTabs";
 import { useBookmarks } from "../hooks/useBookmarks";
 import { useTabSelection } from "../hooks/useTabSelection";
@@ -71,12 +72,12 @@ export function SaveTabsView({ onSaveComplete }: SaveTabsViewProps) {
   const handleSave = async () => {
     const selectedTabs = getSelectedTabs(tabs);
     if (selectedTabs.length === 0) {
-      setError("Please select at least one tab to save");
+      setError("Select at least one tab to save");
       return;
     }
 
     if (!folderName.trim()) {
-      setError("Please enter a folder name");
+      setError("Enter a folder name");
       return;
     }
 
@@ -87,7 +88,7 @@ export function SaveTabsView({ onSaveComplete }: SaveTabsViewProps) {
       const summary = await saveTabs(selectedTabs, folderName.trim());
       onSaveComplete(summary);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save tabs");
+      setError(e instanceof Error ? e.message : "Couldn't save tabs");
       setSaving(false);
     }
   };
@@ -105,7 +106,7 @@ export function SaveTabsView({ onSaveComplete }: SaveTabsViewProps) {
   if (tabsLoading) {
     return (
       <div className="flex items-center justify-center h-full">
-        <div className="text-xs text-white/45">Loading tabs...</div>
+        <div className="text-xs text-white/45">Loading tabs…</div>
       </div>
     );
   }
@@ -115,14 +116,12 @@ export function SaveTabsView({ onSaveComplete }: SaveTabsViewProps) {
       <div className="p-3">
         <StatusMessage
           type="error"
-          title="Failed to load tabs"
+          title="Couldn't load tabs"
           description={tabsError}
         />
       </div>
     );
   }
-
-  const kbdClass = "rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-white/70";
 
   return (
     <div className="flex flex-col h-full">
@@ -184,24 +183,24 @@ export function SaveTabsView({ onSaveComplete }: SaveTabsViewProps) {
           disabled={saving || selectedCount === 0}
           className="w-full"
         >
-          {saving ? "Saving..." : `Save ${selectedCount} Tab${selectedCount !== 1 ? "s" : ""}`}
+          {saving ? "Saving…" : `Save ${selectedCount} Tab${selectedCount !== 1 ? "s" : ""}`}
         </Button>
 
         <div className="flex items-center justify-end gap-4 text-[11px] text-white/50">
           <span className="flex items-center gap-1.5">
-            <kbd className={kbdClass}>↑↓</kbd> Move
+            <Kbd>↑↓</Kbd> Move
           </span>
           <span className="flex items-center gap-1.5">
-            <kbd className={kbdClass}>space</kbd> Select
+            <Kbd>space</Kbd> Select
           </span>
           <span className="flex items-center gap-1.5">
-            <kbd className={kbdClass}>↵</kbd> Save
+            <Kbd>↵</Kbd> Save
           </span>
           <span className="flex items-center gap-1.5">
-            <kbd className={kbdClass}>⌘A</kbd> Select all
+            <Kbd>⌘A</Kbd> Select all
           </span>
           <span className="flex items-center gap-1.5">
-            <kbd className={kbdClass}>esc</kbd> Close
+            <Kbd>esc</Kbd> Close
           </span>
         </div>
       </div>

@@ -87,6 +87,12 @@ export interface AudibleStateChangedMessage {
   muted?: boolean;
 }
 
+/** Broadcast by the background when a tab is closed. */
+export interface TabRemovedMessage {
+  type: "TAB_REMOVED";
+  tabId: number;
+}
+
 /* ------------------------------ media status ------------------------------ */
 // A passive poll for the "now playing" block, routed the same way as media
 // control: overlay iframe -> background -> target tab's content script. Unlike
