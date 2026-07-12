@@ -1,7 +1,7 @@
 # Chrome Web Store — submission pack
 
 Copy-paste material for the CWS developer dashboard, in dashboard order.
-Everything below is verified against the code as of v0.27.0.
+Everything below is verified against the code as of v0.28.0.
 
 ---
 
