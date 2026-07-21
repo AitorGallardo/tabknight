@@ -1190,13 +1190,20 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
         let freshTarget = commandTarget;
         if (command.id !== "new-tab") {
           if (!freshTarget) throw new Error("The current tab is no longer available");
-          const tab = await chrome.tabs.get(freshTarget.id);
+          let tab: chrome.tabs.Tab;
+          try {
+            tab = await chrome.tabs.get(freshTarget.id);
+          } catch {
+            setCommandTarget(null);
+            throw new Error("The current tab is no longer available");
+          }
           freshTarget = {
             id: tab.id!,
             title: tab.title || tab.url || "Current tab",
             pinned: !!tab.pinned,
             muted: !!tab.mutedInfo?.muted,
           };
+          setCommandTarget(freshTarget);
         }
 
         const result = await executeBrowserCommand(command.id, freshTarget, {

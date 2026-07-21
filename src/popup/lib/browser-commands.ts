@@ -102,6 +102,14 @@ const COMMANDS: readonly CommandDefinition[] = [
   },
 ];
 
+/** Revalidates a command against the latest tab state before execution. */
+export function isBrowserCommandAvailable(
+  commandId: BrowserCommandId,
+  context: BrowserCommandContext
+): boolean {
+  return COMMANDS.find((command) => command.id === commandId)?.available(context) ?? false;
+}
+
 function scoreCommand(command: BrowserCommand, query: string): number {
   const normalized = query.trim().toLowerCase();
   if (!normalized) return 0;
@@ -119,7 +127,7 @@ function scoreCommand(command: BrowserCommand, query: string): number {
 /** Pure command discovery: filtering never performs a browser action. */
 export function findBrowserCommands(query: string, context: BrowserCommandContext): BrowserCommand[] {
   if (!query.trim()) return [];
-  return COMMANDS.filter((command) => command.available(context))
+  return COMMANDS.filter((command) => isBrowserCommandAvailable(command.id, context))
     .map((command, index) => ({ command, index, score: scoreCommand(command, query) }))
     .filter(({ score }) => score > 0)
     .sort((a, b) => b.score - a.score || a.index - b.index)

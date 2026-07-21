@@ -1,3 +1,4 @@
+import { isBrowserCommandAvailable } from "./browser-commands";
 import type { BrowserCommandId, BrowserCommandTab } from "./browser-commands";
 
 export interface BrowserCommandApi {
@@ -30,6 +31,9 @@ export async function executeBrowserCommand(
 ): Promise<BrowserCommandExecution> {
   if (TARGET_REQUIRED.has(commandId) && !targetTab) {
     throw new Error("The current tab is no longer available");
+  }
+  if (!isBrowserCommandAvailable(commandId, { targetTab })) {
+    throw new Error("That command is no longer available");
   }
 
   const tab = targetTab as BrowserCommandTab;

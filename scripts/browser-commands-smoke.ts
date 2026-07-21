@@ -55,4 +55,19 @@ try {
 }
 assert(rejected, "Missing targets must fail safely");
 
+for (const [commandId, target] of [
+  ["pin-tab", pinnedMuted],
+  ["unpin-tab", regular],
+  ["mute-tab", pinnedMuted],
+  ["unmute-tab", regular],
+] as const) {
+  rejected = false;
+  try {
+    await executeBrowserCommand(commandId, target, api);
+  } catch {
+    rejected = true;
+  }
+  assert(rejected, `${commandId} must reject stale tab state`);
+}
+
 console.log("✓ browser command matching and execution routing");
