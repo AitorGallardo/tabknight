@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**Last updated: July 12, 2026**
+**Last updated: July 21, 2026**
 
 TabKnight is a local tool. Everything it captures stays in your browser, on
 your device. It has no servers, and it never sends your data anywhere.
@@ -19,6 +19,9 @@ To power tab previews (the Cmd+K overlay) and tab search, TabKnight handles:
 - **Tab titles and URLs** of your open tabs, read to build the searchable tab
   list. Per-session tab-visit counts power the "Most visited" section and are
   discarded when you close the browser.
+- **Bookmark and recent-history titles and URLs** matching the words you type
+  in the command surface. Chrome performs these lookups against its local
+  indexes only after you type; TabKnight does not copy or retain the results.
 - **Favicons**, read from Chrome's local favicon cache (no network request).
 - **Coarse invocation diagnostics**: overlay/fallback mode, fallback cause,
   elapsed time, loading status, and discarded state. The bounded 24-event
@@ -36,8 +39,10 @@ Everything is stored **locally in your browser**, on your device:
 
 ## What never happens
 
-- **No transmission.** TabKnight makes no network requests of its own; nothing
-  is uploaded, synced, or sent to any server.
+- **No background transmission.** TabKnight makes no network requests of its
+  own; nothing is uploaded or synced. If you explicitly activate the **Web
+  search** result, Chrome opens a Google results page and sends that typed
+  query to Google, just as if you searched from Chrome's address bar.
 - **No servers, no accounts.** There is no TabKnight backend.
 - **No analytics or telemetry.** Zero tracking of any kind.
 - **No sale or sharing.** Your data is never sold, shared, or disclosed to
@@ -71,6 +76,7 @@ what's described above:
 | --- | --- |
 | `tabs` | Read titles/URLs of open tabs for search; switch, open, and close tabs |
 | `bookmarks` | Save and restore tab sets as bookmark folders |
+| `history` | Search matching destinations in Chrome's local 90-day history index after you type; results are held in memory only while the command surface is open |
 | `activeTab` | Temporary access to the current tab when you invoke the shortcut, for users who restrict site access to on-click |
 | `scripting` | (Re)inject the overlay/content script; read a tab's media-session metadata for audio controls |
 | `storage`, `unlimitedStorage` | Store previews and small flags on-device |
