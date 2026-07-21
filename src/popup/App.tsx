@@ -147,12 +147,12 @@ export function App() {
           }}
         />
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(60%_60%_at_50%_50%,transparent,rgba(5,6,10,0.42))]" />
-        <div className="relative w-full" style={{ maxWidth: 1040, height: 650 }}>
-          <div className="mb-2 flex h-7 items-center justify-between rounded-lg border border-white/10 bg-black/35 px-2.5 text-[11px] text-white/65 backdrop-blur-xl">
+        <div className="relative flex h-[min(650px,calc(100dvh-2rem))] min-h-[360px] w-full max-w-[1040px] flex-col">
+          <div className="mb-2 flex h-7 shrink-0 items-center justify-between rounded-lg border border-white/10 bg-black/35 px-2.5 text-[11px] text-white/65 backdrop-blur-xl">
             <span>{fallbackExplanation(standaloneContext?.cause)}</span>
             <span className="text-white/40">Esc returns to your tab</span>
           </div>
-          <div style={{ height: 620 }}>
+          <div className="min-h-0 flex-1">
             <TabPreviewView
               contextId={contextId}
               returnToTabId={standaloneContext?.returnToTabId ?? null}

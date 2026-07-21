@@ -8,6 +8,25 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- Local page-text preview controls: descriptions and visible-page excerpts are
+  off by default, can be enabled only for non-sensitive-looking URLs or all
+  sites, and are redacted from existing cards when a restrictive mode is set.
+- Stable source/action labels on compact Cmd+K rows and explicit selection
+  announcements for assistive technology.
+
+### Changed
+
+- The tab-preview rail is denser, responsive down to narrow standalone views,
+  and has distinct high-contrast selected states for system light and dark.
+- Search now exposes the full combobox/listbox accessibility contract and
+  remains the strongest focus target.
+- Audio is an always-visible named control; normal Tab/Shift+Tab traversal can
+  reach Audio, Close, and audio row actions without being intercepted.
+- Real-Chrome smoke coverage now includes light/wide, dark/narrow, popup, and
+  standalone sizing contracts.
+
+### Added in integrated command surface
+
 - Compact standalone fallback explanations for restricted, loading, and
   discarded tabs, with Escape restoring the originating tab.
 - Bounded local invocation diagnostics containing only mode, cause, timing,

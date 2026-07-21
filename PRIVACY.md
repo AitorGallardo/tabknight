@@ -14,8 +14,9 @@ To power tab previews (the Cmd+K overlay) and tab search, TabKnight handles:
   image (max 1600px wide). Only the active tab is ever captured — never
   background tabs, and never anything outside the browser.
 - **Lightweight content cards** harvested from pages you have open: the page's
-  title, meta description, `og:image` URL, `og:site_name`, theme color, and a
-  short excerpt of visible text.
+  title, `og:image` URL, `og:site_name`, and theme color. Descriptions and a
+  short excerpt of visible text are **off by default**. Options can keep them
+  off, suppress them on sensitive-looking URLs, or explicitly enable them.
 - **Tab titles and URLs** of your open tabs, read to build the searchable tab
   list. Per-session tab-visit counts power the "Most visited" section and are
   discarded when you close the browser.
@@ -66,6 +67,11 @@ Older entries are evicted automatically as new ones are captured. To delete
 everything now, open TabKnight's options page (right-click the toolbar icon →
 Options) and use **Clear preview data**. **Uninstalling the extension removes
 all of its local storage.**
+
+Changing page-text previews to either restrictive mode removes descriptions
+and excerpts from existing content cards. That setting does not remove titles,
+URLs, preview images, or screenshots; use **Clear preview data** to purge all
+stored preview content.
 
 ## Permissions, briefly
 

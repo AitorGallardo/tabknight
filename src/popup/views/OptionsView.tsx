@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { Keyboard, ShieldCheck, Trash2 } from "lucide-react";
-import { clearAllCards, clearAllThumbnails, countCards, countThumbnails } from "../lib/preview/db";
+import { EyeOff, Keyboard, ShieldCheck, Trash2 } from "lucide-react";
+import { clearAllCards, clearAllThumbnails, countCards, countThumbnails, redactAllCardText } from "../lib/preview/db";
+import {
+  DEFAULT_PREVIEW_TEXT_PREFERENCE,
+  ensurePreviewTextPrivacy,
+  redactAndMarkPreviewText,
+  setPreviewTextPreference,
+  type PreviewTextPreference,
+} from "../lib/preview/privacy";
 
 interface StorageStats {
   cards: number;
@@ -24,6 +31,8 @@ export function OptionsView() {
   const [stats, setStats] = useState<StorageStats | null>(null);
   const [clearing, setClearing] = useState(false);
   const [cleared, setCleared] = useState(false);
+  const [textPreference, setTextPreference] = useState<PreviewTextPreference>(DEFAULT_PREVIEW_TEXT_PREFERENCE);
+  const [privacyStatus, setPrivacyStatus] = useState("");
   const version = chrome.runtime.getManifest().version;
 
   const loadStats = useCallback(async () => {
@@ -57,7 +66,20 @@ export function OptionsView() {
       }
     })();
     void loadStats();
+    void ensurePreviewTextPrivacy(redactAllCardText).then(setTextPreference);
   }, [loadStats]);
+
+  const handleTextPreference = useCallback(async (preference: PreviewTextPreference) => {
+    setTextPreference(preference);
+    setPrivacyStatus("Saving preview text preference");
+    await setPreviewTextPreference(preference);
+    if (preference !== "always-show") await redactAndMarkPreviewText(redactAllCardText);
+    setPrivacyStatus(
+      preference === "always-show"
+        ? "Page text previews enabled"
+        : "Stored page text removed and future collection limited"
+    );
+  }, []);
 
   const handleClear = useCallback(async () => {
     setClearing(true);
@@ -76,7 +98,8 @@ export function OptionsView() {
   };
 
   return (
-    <div className="relative min-h-screen overflow-x-hidden bg-[#05060a] px-4 py-10 text-[#f5f5f7]">
+    <div className="relative min-h-screen overflow-x-hidden bg-zinc-100 px-4 py-10 text-zinc-950 dark:bg-[#05060a] dark:text-[#f5f5f7]">
+      <div aria-live="polite" className="sr-only">{privacyStatus}</div>
       <div
         className="pointer-events-none absolute inset-0 opacity-[0.16]"
         style={{
@@ -135,8 +158,44 @@ export function OptionsView() {
             TabKnight builds tab previews by reading page titles, descriptions, and
             og:images, and by capturing screenshots of the tabs you visit. All of
             it is stored locally in your browser (IndexedDB) — nothing ever leaves
-            your device. No analytics, no network calls, no third parties.
+            your device. TabKnight has no analytics or servers. Page-owned
+            preview images may be loaded directly from the original site.
           </p>
+        </section>
+
+        <section className={panelClass} aria-labelledby="preview-text-heading">
+          <div id="preview-text-heading" className="flex items-center gap-2 text-sm font-semibold text-white/90">
+            <EyeOff className="h-4 w-4 text-[#5eaeff]" />
+            Page text in previews
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-white/55">
+            Controls descriptions and visible-page excerpts only. Titles, URLs, preview images, and screenshots are separate.
+          </p>
+          <fieldset className="mt-3 space-y-1.5">
+            {([
+              ["always-hide", "Hide page text", "Recommended — no descriptions or body excerpts are collected."],
+              ["sensitive", "Hide on sensitive sites", "Uses a local URL check for mail, banking, account, and private areas."],
+              ["always-show", "Show on all sites", "Collects and displays descriptions and short body excerpts locally."],
+            ] as const).map(([value, label, description]) => (
+              <label
+                key={value}
+                className="flex cursor-pointer gap-2 rounded-md border border-white/10 bg-white/[0.035] px-2.5 py-2 text-left transition-colors hover:bg-white/[0.07] focus-within:ring-[2px] focus-within:ring-[#0a84ff]/50"
+              >
+                <input
+                  type="radio"
+                  name="preview-text"
+                  value={value}
+                  checked={textPreference === value}
+                  onChange={() => void handleTextPreference(value)}
+                  className="mt-0.5 h-3.5 w-3.5"
+                />
+                <span>
+                  <span className="block text-xs font-medium text-white/85">{label}</span>
+                  <span className="block text-[11px] leading-relaxed text-white/45">{description}</span>
+                </span>
+              </label>
+            ))}
+          </fieldset>
         </section>
 
         <section className={panelClass}>

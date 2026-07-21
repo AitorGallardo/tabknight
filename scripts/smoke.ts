@@ -6,11 +6,13 @@
  * DevTools Protocol (plain WebSocket + fetch, no npm deps), and asserts that:
  *
  *   1. The preview overlay injects exactly once and focuses its frame.
- *   2. Universal intent search renders all available typed sources.
+ *   2. Responsive light/dark, wide/narrow, and accessibility contracts hold.
  *   3. Host-page spoofed lifecycle messages are ignored.
- *   4. The options page loads and mounts React.
- *   5. The overlay closes cleanly.
- *   6. A restricted-page fallback explains itself, focuses search, and Escape
+ *   4. Popup and standalone sizing stay within their viewports.
+ *   5. Universal intent search renders all available typed sources.
+ *   6. The privacy options page loads with page text disabled by default.
+ *   7. The overlay closes cleanly.
+ *   8. A restricted-page fallback explains itself, focuses search, and Escape
  *      closes it while restoring the origin tab.
  *
  * Chrome >= 137 (stable) ignores --load-extension, so the extension is loaded
@@ -22,7 +24,7 @@
  */
 
 import { existsSync, rmSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -373,6 +375,7 @@ async function main(): Promise<number> {
     }
     const page = new CDP(pageTarget.webSocketDebuggerUrl);
     await page.send("Runtime.enable");
+    await page.send("Page.enable");
 
     const toggleExpr = `(async () => {
       const [tab] = await chrome.tabs.query({ url: "${testUrl}" });
@@ -383,6 +386,28 @@ async function main(): Promise<number> {
       });
       return JSON.stringify(res);
     })()`;
+
+    // Seed one inactive result so compact-row and selection checks are
+    // deterministic even in the clean throwaway Chrome profile.
+    const seededTabId = await evaluate(
+      sw,
+      `(async () => {
+        const existing = await chrome.tabs.query({ url: "https://example.org/" });
+        const tab = existing[0] ?? await chrome.tabs.create({ url: "https://example.org/", active: false });
+        return tab.id;
+      })()`
+    );
+    await waitFor(
+      async () =>
+        evaluate(
+          sw,
+          `(async () => {
+            const tab = await chrome.tabs.get(${seededTabId});
+            return tab.status === "complete" && tab.url === "https://example.org/";
+          })()`
+        ),
+      { timeoutMs: 10000, intervalMs: 200, label: "seeded result tab to finish loading" }
+    );
 
     /* ------------------------- TEST 1: overlay injects ------------------------ */
     try {
@@ -436,6 +461,96 @@ async function main(): Promise<number> {
       });
     }
 
+    /* ------------------ TEST 2: responsive theme/a11y matrix ----------------- */
+    try {
+      const visualTarget = await jsonNew(port, `chrome-extension://${extensionId}/popup/index.html?standalone=1`);
+      if (!visualTarget.webSocketDebuggerUrl) throw new Error("visual target has no debugger URL");
+      const visual = new CDP(visualTarget.webSocketDebuggerUrl);
+      await visual.send("Runtime.enable");
+      await visual.send("Page.enable");
+
+      const qaDir = process.env.TABKNIGHT_QA_DIR;
+      if (qaDir) await mkdir(qaDir, { recursive: true });
+      const scenarios = [
+        { name: "light-wide", width: 1040, height: 640, theme: "light" },
+        { name: "dark-narrow", width: 640, height: 480, theme: "dark" },
+      ];
+
+      for (const scenario of scenarios) {
+        await visual.send("Emulation.setDeviceMetricsOverride", {
+          width: scenario.width,
+          height: scenario.height,
+          deviceScaleFactor: 1,
+          mobile: false,
+        });
+        await visual.send("Emulation.setEmulatedMedia", {
+          features: [{ name: "prefers-color-scheme", value: scenario.theme }],
+        });
+        const state = await waitFor(
+          async () => {
+            const observed = JSON.parse(
+              await evaluate(
+                visual,
+                `(() => {
+              const combo = document.querySelector('[role="combobox"]');
+              const selected = document.querySelector('[role="option"][aria-selected="true"]');
+              const audioControl = Array.from(document.querySelectorAll('button')).find((el) => el.textContent?.includes('Audio'));
+              audioControl?.focus();
+              const nativeEnter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+              const controlsKeepNativeKeys = audioControl?.dispatchEvent(nativeEnter) ?? false;
+              combo?.focus();
+              return JSON.stringify({
+                hasCombo: !!combo,
+                controls: combo?.getAttribute('aria-controls'),
+                activeDescendant: combo?.getAttribute('aria-activedescendant'),
+                sourceLabels: Array.from(document.querySelectorAll('span')).some((el) => el.textContent?.trim() === 'Tab'),
+                audioControl: !!audioControl,
+                controlsKeepNativeKeys,
+                privacyCopy: document.body.textContent?.includes('Page text not collected') ?? false,
+                selectedBackground: selected ? getComputedStyle(selected).backgroundColor : null,
+                noHorizontalOverflow: document.documentElement.scrollWidth <= innerWidth,
+                viewport: [innerWidth, innerHeight],
+              });
+            })()`
+              )
+            );
+            return observed.hasCombo && observed.activeDescendant && observed.sourceLabels && observed.privacyCopy
+              ? observed
+              : null;
+          },
+          { timeoutMs: 5000, intervalMs: 100, label: `${scenario.name} populated overlay` }
+        );
+        if (!state.hasCombo || state.controls !== "tk-results" || !state.activeDescendant) {
+          throw new Error(`${scenario.name}: combobox contract incomplete: ${JSON.stringify(state)}`);
+        }
+        if (
+          !state.sourceLabels ||
+          !state.audioControl ||
+          !state.controlsKeepNativeKeys ||
+          !state.privacyCopy ||
+          !state.noHorizontalOverflow ||
+          state.viewport[0] !== scenario.width ||
+          state.viewport[1] !== scenario.height
+        ) {
+          throw new Error(`${scenario.name}: visual contract incomplete: ${JSON.stringify(state)}`);
+        }
+        if (qaDir) {
+          const shot = await visual.send("Page.captureScreenshot", { format: "png", fromSurface: true });
+          await Bun.write(join(qaDir, `${scenario.name}.png`), Buffer.from(shot.data, "base64"));
+        }
+      }
+      await visual.send("Emulation.clearDeviceMetricsOverride");
+      visual.close();
+      await browser?.send("Target.closeTarget", { targetId: visualTarget.id });
+      results.push({ name: "light/wide and dark/narrow visual contracts", ok: true });
+    } catch (err) {
+      results.push({
+        name: "light/wide and dark/narrow visual contracts",
+        ok: false,
+        error: (err as Error).message,
+      });
+    }
+
     /* -------------------- TEST 2: forged lifecycle ignored -------------------- */
     try {
       await evaluate(
@@ -452,6 +567,45 @@ async function main(): Promise<number> {
         ok: false,
         error: (err as Error).message,
       });
+    }
+
+    /* ------------------- TEST 3: popup + standalone sizing -------------------- */
+    try {
+      const popupTarget = await jsonNew(port, `chrome-extension://${extensionId}/popup/index.html`);
+      if (!popupTarget.webSocketDebuggerUrl) throw new Error("popup target has no debugger URL");
+      const popup = new CDP(popupTarget.webSocketDebuggerUrl);
+      await popup.send("Runtime.enable");
+      await sleep(500);
+      const popupSize = JSON.parse(
+        await evaluate(
+          popup,
+          `(() => { const el = document.getElementById('root')?.firstElementChild; const r = el?.getBoundingClientRect(); return JSON.stringify([r?.width, r?.height]); })()`
+        )
+      );
+      if (popupSize[0] !== 400 || popupSize[1] !== 500) throw new Error(`popup measured ${popupSize}`);
+      popup.close();
+      await browser?.send("Target.closeTarget", { targetId: popupTarget.id });
+
+      const standaloneTarget = await jsonNew(port, `chrome-extension://${extensionId}/popup/index.html?standalone=1`);
+      if (!standaloneTarget.webSocketDebuggerUrl) throw new Error("standalone target has no debugger URL");
+      const standalone = new CDP(standaloneTarget.webSocketDebuggerUrl);
+      await standalone.send("Runtime.enable");
+      await standalone.send("Emulation.setDeviceMetricsOverride", { width: 640, height: 480, deviceScaleFactor: 1, mobile: false });
+      await sleep(500);
+      const standaloneState = JSON.parse(
+        await evaluate(
+          standalone,
+          `(() => { const panel = document.querySelector('.tk-preview'); const r = panel?.getBoundingClientRect(); return JSON.stringify({ panel: !!panel, width: r?.width, height: r?.height, noOverflow: document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight }); })()`
+        )
+      );
+      if (!standaloneState.panel || !standaloneState.noOverflow || standaloneState.width > 640 || standaloneState.height > 480) {
+        throw new Error(`standalone sizing failed: ${JSON.stringify(standaloneState)}`);
+      }
+      standalone.close();
+      await browser?.send("Target.closeTarget", { targetId: standaloneTarget.id });
+      results.push({ name: "400x500 popup and 640x480 standalone sizing", ok: true });
+    } catch (err) {
+      results.push({ name: "400x500 popup and 640x480 standalone sizing", ok: false, error: (err as Error).message });
     }
 
     /* -------------------- TEST 2: universal intent results -------------------- */
@@ -519,7 +673,7 @@ async function main(): Promise<number> {
       await sleep(1000);
       const mounted = await evaluate(
         optionsCdp,
-        `document.getElementById("root")?.children.length > 0`
+        `document.getElementById("root")?.children.length > 0 && !!document.querySelector('input[name="preview-text"][value="always-hide"]:checked')`
       );
       if (!mounted) throw new Error("options page #root has no children");
       results.push({ name: "options page loads and mounts", ok: true });
@@ -533,7 +687,7 @@ async function main(): Promise<number> {
       });
     }
 
-    /* ------------------------- TEST 4: overlay closes ------------------------- */
+    /* ------------------------- TEST 7: overlay closes ------------------------- */
     try {
       const toggleRes = await evaluate(sw, toggleExpr);
       const parsed = JSON.parse(toggleRes);
@@ -663,7 +817,7 @@ async function main(): Promise<number> {
   console.log("");
   console.log(`mode: ${mode}, runtime: ${(runtimeMs / 1000).toFixed(1)}s`);
 
-  const allPassed = results.length === 6 && results.every((r) => r.ok);
+  const allPassed = results.length === 8 && results.every((r) => r.ok);
   return allPassed ? 0 : 1;
 }
 
