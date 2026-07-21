@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Search, X } from "lucide-react";
+import { Bookmark, Clock3, Globe2, Search, X } from "lucide-react";
 import { Favicon } from "../components/Favicon";
 import { Kbd } from "../components/Kbd";
-import { activateTab, getAllTabs, openTabFromQuery } from "../lib/chrome-api";
+import { activateTab, getAllTabs, openUrlAsTab, searchBookmarks, searchHistory } from "../lib/chrome-api";
 import { scoreTab } from "../lib/rank";
+import { rankIntentResults } from "../lib/intent-search";
+import type { IntentBookmark, IntentHistoryEntry, IntentResult } from "../lib/intent-search";
 import { useListNavigation } from "../hooks/useListNavigation";
 
 interface TabNavigatorViewProps {
@@ -25,10 +27,6 @@ interface NavigatorTab {
   lastAccessed: number;
 }
 
-type NavigatorItem =
-  | { type: "open"; id: "open"; title: string; subtitle: string }
-  | { type: "tab"; id: string; tab: NavigatorTab; score: number };
-
 const SCROLL_INSETS = { top: 10, bottom: 26 };
 
 export function TabNavigatorView({
@@ -43,6 +41,8 @@ export function TabNavigatorView({
   const [currentWindowId, setCurrentWindowId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [intentBookmarks, setIntentBookmarks] = useState<IntentBookmark[]>([]);
+  const [intentHistory, setIntentHistory] = useState<IntentHistoryEntry[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -91,11 +91,29 @@ export function TabNavigatorView({
     void loadTabs();
   }, []);
 
+  const intentRequestRef = useRef(0);
+  useEffect(() => {
+    const q = query.trim();
+    const requestId = ++intentRequestRef.current;
+    setIntentBookmarks([]);
+    setIntentHistory([]);
+    if (!q) return;
+    void searchBookmarks(q).then((nodes) => {
+      if (intentRequestRef.current !== requestId) return;
+      setIntentBookmarks(nodes.filter((node): node is chrome.bookmarks.BookmarkTreeNode & { url: string } => !!node.url).slice(0, 30).map((node) => ({ id: node.id, title: node.title || node.url, url: node.url, dateAdded: node.dateAdded })));
+    }).catch(() => {});
+    if (q.length < 2) return;
+    void searchHistory(q).then((entries) => {
+      if (intentRequestRef.current !== requestId) return;
+      setIntentHistory(entries.filter((entry): entry is chrome.history.HistoryItem & { url: string } => !!entry.url).map((entry) => ({ id: entry.id, title: entry.title || entry.url, url: entry.url, lastVisitTime: entry.lastVisitTime, visitCount: entry.visitCount })));
+    }).catch(() => {});
+  }, [query]);
+
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
-  const items = useMemo<NavigatorItem[]>(() => {
+  const items = useMemo<IntentResult[]>(() => {
     const q = query.trim();
 
     const ranked = tabs
@@ -108,20 +126,28 @@ export function TabNavigatorView({
         if (a.tab.windowId !== b.tab.windowId) return a.tab.windowId - b.tab.windowId;
         return a.tab.index - b.tab.index;
       })
-      .map(({ tab, score }) => ({ type: "tab" as const, id: `tab-${tab.id}`, tab, score }));
+      .map(({ tab, score }) => ({ type: "tab" as const, key: `tab:${tab.id}`, sourceLabel: "Open tab" as const, actionLabel: "Switch to tab" as const, tab, score }));
 
     if (!q) return ranked;
 
-    return [
-      {
-        type: "open",
-        id: "open",
-        title: `Open \"${q}\"`,
-        subtitle: "Search or enter URL",
-      },
-      ...ranked,
-    ];
-  }, [tabs, query, currentWindowId]);
+    return rankIntentResults({ query: q, tabs, bookmarks: intentBookmarks, history: intentHistory, currentWindowId });
+  }, [tabs, query, currentWindowId, intentBookmarks, intentHistory]);
+
+  const selectedKeyRef = useRef<string | null>(null);
+  const previousKeysRef = useRef<string[]>([]);
+  const previousQueryRef = useRef(query);
+  useEffect(() => {
+    const keys = items.map((item) => item.key);
+    const queryChanged = previousQueryRef.current !== query;
+    const keysChanged = keys.length !== previousKeysRef.current.length || keys.some((key, index) => key !== previousKeysRef.current[index]);
+    previousQueryRef.current = query;
+    previousKeysRef.current = keys;
+    if (!queryChanged && keysChanged && selectedKeyRef.current) {
+      const retained = keys.indexOf(selectedKeyRef.current);
+      if (retained >= 0 && retained !== activeIndex) setActiveIndex(retained);
+    }
+    selectedKeyRef.current = keys[activeIndex] ?? null;
+  });
 
   const focusInputAtEnd = useCallback(() => {
     const input = inputRef.current;
@@ -174,18 +200,18 @@ export function TabNavigatorView({
     window.close();
   }, [closeCurrentNavigatorTab, returnToOriginTab, temporary]);
 
-  const executeItem = useCallback(async (item: NavigatorItem | undefined) => {
+  const executeItem = useCallback(async (item: IntentResult | undefined) => {
     if (!item) return;
 
-    if (item.type === "open") {
-      await openTabFromQuery(query);
+    if (item.type !== "tab") {
+      await openUrlAsTab(item.url);
       await dismissNavigator(false);
       return;
     }
 
     await activateTab(item.tab.id, item.tab.windowId);
     await dismissNavigator(false);
-  }, [dismissNavigator, query]);
+  }, [dismissNavigator]);
 
   const onActivate = useCallback(
     (index: number) => {
@@ -233,11 +259,11 @@ export function TabNavigatorView({
           ref={inputRef}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search or enter URL…"
+          placeholder="Search tabs, bookmarks, history, or the web…"
           className="h-8 w-full border-none bg-transparent text-base font-medium tracking-[-0.01em] text-white/92 outline-none placeholder:text-white/30"
           autoComplete="off"
           spellCheck={false}
-          aria-label="Search tabs"
+          aria-label="Search tabs, bookmarks, history, or the web"
         />
         {showSaveButton && onOpenSaveFlow && (
           <button
@@ -283,32 +309,11 @@ export function TabNavigatorView({
             const tileClass = active ? "bg-white/20" : "bg-white/[0.08] text-white/80";
             const subClass = active ? "text-white/70" : "text-white/45";
 
-            if (item.type === "open") {
-              return (
-                <button
-                  key={item.id}
-                  ref={registerItem(index)}
-                  type="button"
-                  onMouseEnter={() => setActiveIndex(index)}
-                  onClick={() => {
-                    void executeItem(item);
-                  }}
-                  className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${rowClass}`}
-                >
-                  <span className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${tileClass}`}>
-                    <Search className="h-3.5 w-3.5" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">{item.title}</span>
-                    <span className={`block truncate text-[11px] ${subClass}`}>{item.subtitle}</span>
-                  </span>
-                </button>
-              );
-            }
-
+            const title = item.type === "tab" ? item.tab.title : item.title;
+            const url = item.type === "tab" ? item.tab.url : item.url;
             return (
               <button
-                key={item.id}
+                key={item.key}
                 ref={registerItem(index)}
                 type="button"
                 onMouseEnter={() => setActiveIndex(index)}
@@ -318,17 +323,15 @@ export function TabNavigatorView({
                 className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${rowClass}`}
               >
                 <span className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${tileClass}`}>
-                  <Favicon
-                    pageUrl={item.tab.url}
-                    favIconUrl={item.tab.favIconUrl}
-                    size={24}
-                    className="h-full w-full object-cover"
-                  />
+                  {item.type === "tab" ? (
+                    <Favicon pageUrl={item.tab.url} favIconUrl={item.tab.favIconUrl} size={24} className="h-full w-full object-cover" />
+                  ) : item.type === "bookmark" ? <Bookmark className="h-3.5 w-3.5" /> : item.type === "history" ? <Clock3 className="h-3.5 w-3.5" /> : item.type === "search" ? <Search className="h-3.5 w-3.5" /> : <Globe2 className="h-3.5 w-3.5" />}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">{item.tab.title}</span>
-                  <span className={`block truncate text-[11px] ${subClass}`}>{item.tab.url}</span>
+                  <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">{title}</span>
+                  <span className={`block truncate text-[11px] ${subClass}`}>{url}</span>
                 </span>
+                <span className={`shrink-0 text-[10px] ${subClass}`}>{item.sourceLabel}</span>
               </button>
             );
           })}
@@ -336,7 +339,7 @@ export function TabNavigatorView({
 
       <div className="flex items-center justify-end gap-4 border-t border-white/[0.07] px-4 py-3 text-[11px] text-white/50">
         <span className="flex items-center gap-1.5">
-          <Kbd>↵</Kbd> Switch to tab
+          <Kbd>↵</Kbd> {items[activeIndex]?.actionLabel ?? "Open"}
         </span>
         <span className="flex items-center gap-1.5">
           <Kbd>esc</Kbd> {query !== "" ? "Clear" : "Close"}
