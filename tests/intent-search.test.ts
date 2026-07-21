@@ -57,6 +57,34 @@ describe("rankIntentResults", () => {
     expect(results.filter((item) => item.type === "bookmark")).toHaveLength(1);
     expect(results.filter((item) => item.type === "history")).toHaveLength(0);
   });
+
+  test("preserves bookmark and history hashes in activation URLs", () => {
+    const results = rankIntentResults({
+      query: "dashboard",
+      tabs: [],
+      bookmarks: [{ id: "b", title: "Dashboard", url: "https://example.com/app/#/Dashboard" }],
+      history: [{ id: "h", title: "Other dashboard", url: "https://other.example/app/#/Dashboard" }],
+    });
+    expect(results.find((item) => item.type === "bookmark")?.url).toBe(
+      "https://example.com/app/#/Dashboard"
+    );
+    expect(results.find((item) => item.type === "history")?.url).toBe(
+      "https://other.example/app/#/Dashboard"
+    );
+  });
+
+  test("preserves case-sensitive direct URLs and web-search queries", () => {
+    const results = rankIntentResults({
+      query: "https://example.com/CaseSensitive?Token=AbC",
+      tabs: [],
+    });
+    expect(results.find((item) => item.type === "direct")?.url).toBe(
+      "https://example.com/CaseSensitive?Token=AbC"
+    );
+    expect(results.find((item) => item.type === "search")?.url).toBe(
+      "https://www.google.com/search?q=https%3A%2F%2Fexample.com%2FCaseSensitive%3FToken%3DAbC"
+    );
+  });
 });
 
 describe("query destinations", () => {

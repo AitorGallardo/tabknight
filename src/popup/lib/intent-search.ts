@@ -63,11 +63,21 @@ export function normalizeQuery(query: string): string {
 }
 
 function canonicalHttpUrl(value: string): string | null {
+  const href = navigableHttpUrl(value);
+  if (!href) return null;
   try {
-    const url = new URL(value);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    const url = new URL(href);
     url.hash = "";
     return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function navigableHttpUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
   } catch {
     return null;
   }
@@ -124,6 +134,7 @@ export function rankIntentResults({
 }: RankIntentInput): IntentResult[] {
   const q = normalizeQuery(query);
   if (!q) return [];
+  const destinationQuery = query.normalize("NFKC").trim().replace(/\s+/g, " ");
 
   const results: IntentResult[] = [];
   for (const tab of tabs) {
@@ -142,8 +153,9 @@ export function rankIntentResults({
 
   const bookmarkUrls = new Set<string>();
   for (const bookmark of bookmarks) {
-    const canonicalUrl = canonicalHttpUrl(bookmark.url);
-    if (!canonicalUrl || bookmarkUrls.has(canonicalUrl)) continue;
+    const url = navigableHttpUrl(bookmark.url);
+    const canonicalUrl = url ? canonicalHttpUrl(url) : null;
+    if (!url || !canonicalUrl || bookmarkUrls.has(canonicalUrl)) continue;
     const relevance = textScore(bookmark.title, bookmark.url, q);
     if (relevance > 0) {
       bookmarkUrls.add(canonicalUrl);
@@ -154,15 +166,16 @@ export function rankIntentResults({
         actionLabel: "Open bookmark",
         score: SOURCE_WEIGHT.bookmark + relevance,
         title: bookmark.title || bookmark.url,
-        url: canonicalUrl,
+        url,
       });
     }
   }
 
   const historyUrls = new Set<string>();
   for (const entry of history) {
-    const canonicalUrl = canonicalHttpUrl(entry.url);
-    if (!canonicalUrl || bookmarkUrls.has(canonicalUrl) || historyUrls.has(canonicalUrl)) continue;
+    const url = navigableHttpUrl(entry.url);
+    const canonicalUrl = url ? canonicalHttpUrl(url) : null;
+    if (!url || !canonicalUrl || bookmarkUrls.has(canonicalUrl) || historyUrls.has(canonicalUrl)) continue;
     const relevance = textScore(entry.title, entry.url, q);
     if (relevance > 0) {
       historyUrls.add(canonicalUrl);
@@ -174,7 +187,7 @@ export function rankIntentResults({
         actionLabel: "Open from history",
         score: SOURCE_WEIGHT.history + relevance + visitBoost,
         title: entry.title || entry.url,
-        url: canonicalUrl,
+        url,
       });
     }
   }
@@ -185,7 +198,7 @@ export function rankIntentResults({
   const strongestUrl = strongestDestination?.type === "tab" ? strongestDestination.tab.url : strongestDestination?.url;
   const inferredDirectUrl = strongestUrl ? canonicalHttpUrl(strongestUrl) : null;
   const inferredOrigin = inferredDirectUrl ? new URL(inferredDirectUrl).origin + "/" : null;
-  const directUrl = directUrlForQuery(q) ?? inferredOrigin;
+  const directUrl = directUrlForQuery(destinationQuery) ?? inferredOrigin;
   if (directUrl) {
     results.push({
       type: "direct",
@@ -198,14 +211,14 @@ export function rankIntentResults({
     });
   }
 
-  const searchUrl = webSearchUrl(q);
+  const searchUrl = webSearchUrl(destinationQuery);
   results.push({
     type: "search",
     key: `search:${q.toLowerCase()}`,
     sourceLabel: "Web search",
     actionLabel: "Search the web",
     score: SOURCE_WEIGHT.search,
-    title: `Search for “${q}”`,
+    title: `Search for “${destinationQuery}”`,
     url: searchUrl,
   });
 
