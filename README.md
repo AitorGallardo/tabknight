@@ -48,12 +48,12 @@ TabKnight is keyboard-first by design — you rarely need the mouse.
 | --- | --- |
 | `↑` · `↓` | Move the selection |
 | `Enter` | Switch to the selected tab (or open the typed query) |
-| `Tab` | Toggle Tabs ⇄ Audio mode (see below) |
+| `Tab` | Move focus through Search, Audio, Close, and row controls |
 | `Esc` | Staged close — clears the query, then steps back from Audio mode, then closes |
 | _type…_ | Filter instantly — the search stays focused even if focus drifts |
 | `Backspace` | Edit the query without clicking back into the input |
 
-**Audio mode** (press `Tab`, or watch for the `♪ N playing` pill)
+**Audio mode** (choose the always-visible Audio control beside Search)
 
 | Shortcut | Action |
 | --- | --- |
@@ -97,7 +97,7 @@ Press `⌘ K` and a command palette blends in over the current page; you never g
 
 ### 🎧 Audio playground
 
-Press `Tab` inside the overlay (or notice the `♪ N playing` pill) to switch into **Audio mode** — a live list of every background tab that's playing or muted audio, complete with a CSS-only equalizer. Mute/unmute any tab instantly, or play/pause its media without switching to it. `Space` toggles playback, `←`/`→` mute, `Enter` jumps to the tab.
+Choose **Audio** beside Search to switch into **Audio mode** — a live list of every background tab that's playing or muted audio, complete with a CSS-only equalizer. Mute/unmute any tab instantly, or play/pause its media without switching to it. With Search focused, `Space` toggles playback and `←`/`→` mute; `Enter` jumps to the tab. Normal Tab/Shift+Tab navigation reaches every control.
 
 <table>
   <tr>
@@ -135,6 +135,8 @@ Chrome blocks extensions from injecting UI into its own internal pages (`chrome:
 ### 🔐 Privacy-first, with real controls
 
 A first-run hint shows you the actual bound shortcut the first time you install (or offers to set one) and dismisses itself once you use it. The **options page** (right-click the toolbar icon → Options) shows live counts and the approximate size of your stored preview data, in plain language, with a one-click **Clear preview data** purge. See [`PRIVACY.md`](PRIVACY.md) for exactly what's collected and how it's capped.
+
+Descriptions and visible-page excerpts are off by default. Options can keep them off, allow them only on URLs that do not look sensitive, or explicitly enable them everywhere. Restrictive modes also redact previously stored descriptions and excerpts; titles, URLs, preview images, and screenshots are controlled separately.
 
 ## 🧠 Under the hood
 

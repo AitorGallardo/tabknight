@@ -18,7 +18,7 @@
  */
 
 import { existsSync, rmSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -361,12 +361,24 @@ async function main(): Promise<number> {
     }
     const page = new CDP(pageTarget.webSocketDebuggerUrl);
     await page.send("Runtime.enable");
+    await page.send("Page.enable");
 
     const toggleExpr = `(async () => {
       const [tab] = await chrome.tabs.query({ url: "${TEST_URL}" });
       const res = await chrome.tabs.sendMessage(tab.id, { type: "PREVIEW_OVERLAY_TOGGLE" });
       return JSON.stringify(res);
     })()`;
+
+    // Seed one inactive result so compact-row and selection checks are
+    // deterministic even in the clean throwaway Chrome profile.
+    await evaluate(
+      sw,
+      `(async () => {
+        const existing = await chrome.tabs.query({ url: "https://example.org/" });
+        if (!existing.length) await chrome.tabs.create({ url: "https://example.org/", active: false });
+        return true;
+      })()`
+    );
 
     /* ------------------------- TEST 1: overlay injects ------------------------ */
     try {
@@ -411,7 +423,119 @@ async function main(): Promise<number> {
       });
     }
 
-    /* -------------------------- TEST 2: options page -------------------------- */
+    /* ------------------ TEST 2: responsive theme/a11y matrix ----------------- */
+    try {
+      const frameTarget = await waitFor(
+        async () => {
+          const list = await jsonList(port);
+          return list.find((t) => t.url.includes("/popup/index.html?overlay=1"));
+        },
+        { timeoutMs: 5000, intervalMs: 250, label: "overlay iframe target" }
+      );
+      if (!frameTarget.webSocketDebuggerUrl) throw new Error("overlay iframe target has no debugger URL");
+      const frame = new CDP(frameTarget.webSocketDebuggerUrl);
+      await frame.send("Runtime.enable");
+
+      const qaDir = process.env.TABKNIGHT_QA_DIR;
+      if (qaDir) await mkdir(qaDir, { recursive: true });
+      const scenarios = [
+        { name: "light-wide", width: 1040, height: 640, theme: "light" },
+        { name: "dark-narrow", width: 640, height: 480, theme: "dark" },
+      ];
+
+      for (const scenario of scenarios) {
+        await page.send("Emulation.setDeviceMetricsOverride", {
+          width: scenario.width,
+          height: scenario.height,
+          deviceScaleFactor: 1,
+          mobile: false,
+        });
+        await page.send("Emulation.setEmulatedMedia", {
+          features: [{ name: "prefers-color-scheme", value: scenario.theme }],
+        });
+        await sleep(150);
+        const state = JSON.parse(
+          await evaluate(
+            frame,
+            `(() => {
+              const combo = document.querySelector('[role="combobox"]');
+              const selected = document.querySelector('[role="option"][aria-selected="true"]');
+              return JSON.stringify({
+                hasCombo: !!combo,
+                controls: combo?.getAttribute('aria-controls'),
+                activeDescendant: combo?.getAttribute('aria-activedescendant'),
+                sourceLabels: Array.from(document.querySelectorAll('span')).some((el) => el.textContent?.trim() === 'Tab'),
+                audioControl: document.body.textContent?.includes('Audio') ?? false,
+                privacyCopy: document.body.textContent?.includes('Page text not collected') ?? false,
+                selectedBackground: selected ? getComputedStyle(selected).backgroundColor : null,
+                noHorizontalOverflow: document.documentElement.scrollWidth <= innerWidth,
+                viewport: [innerWidth, innerHeight],
+              });
+            })()`
+          )
+        );
+        if (!state.hasCombo || state.controls !== "tk-results" || !state.activeDescendant) {
+          throw new Error(`${scenario.name}: combobox contract incomplete: ${JSON.stringify(state)}`);
+        }
+        if (!state.sourceLabels || !state.audioControl || !state.privacyCopy || !state.noHorizontalOverflow) {
+          throw new Error(`${scenario.name}: visual contract incomplete: ${JSON.stringify(state)}`);
+        }
+        if (qaDir) {
+          const shot = await page.send("Page.captureScreenshot", { format: "png", fromSurface: true });
+          await Bun.write(join(qaDir, `${scenario.name}.png`), Buffer.from(shot.data, "base64"));
+        }
+      }
+      await page.send("Emulation.clearDeviceMetricsOverride");
+      frame.close();
+      results.push({ name: "light/wide and dark/narrow visual contracts", ok: true });
+    } catch (err) {
+      results.push({
+        name: "light/wide and dark/narrow visual contracts",
+        ok: false,
+        error: (err as Error).message,
+      });
+    }
+
+    /* ------------------- TEST 3: popup + standalone sizing -------------------- */
+    try {
+      const popupTarget = await jsonNew(port, `chrome-extension://${extensionId}/popup/index.html`);
+      if (!popupTarget.webSocketDebuggerUrl) throw new Error("popup target has no debugger URL");
+      const popup = new CDP(popupTarget.webSocketDebuggerUrl);
+      await popup.send("Runtime.enable");
+      await sleep(500);
+      const popupSize = JSON.parse(
+        await evaluate(
+          popup,
+          `(() => { const el = document.getElementById('root')?.firstElementChild; const r = el?.getBoundingClientRect(); return JSON.stringify([r?.width, r?.height]); })()`
+        )
+      );
+      if (popupSize[0] !== 400 || popupSize[1] !== 500) throw new Error(`popup measured ${popupSize}`);
+      popup.close();
+      await browser?.send("Target.closeTarget", { targetId: popupTarget.id });
+
+      const standaloneTarget = await jsonNew(port, `chrome-extension://${extensionId}/popup/index.html?standalone=1`);
+      if (!standaloneTarget.webSocketDebuggerUrl) throw new Error("standalone target has no debugger URL");
+      const standalone = new CDP(standaloneTarget.webSocketDebuggerUrl);
+      await standalone.send("Runtime.enable");
+      await standalone.send("Emulation.setDeviceMetricsOverride", { width: 640, height: 480, deviceScaleFactor: 1, mobile: false });
+      await sleep(500);
+      const standaloneState = JSON.parse(
+        await evaluate(
+          standalone,
+          `(() => { const panel = document.querySelector('.tk-preview'); const r = panel?.getBoundingClientRect(); return JSON.stringify({ panel: !!panel, width: r?.width, height: r?.height, noOverflow: document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight }); })()`
+        )
+      );
+      if (!standaloneState.panel || !standaloneState.noOverflow || standaloneState.width > 640 || standaloneState.height > 480) {
+        throw new Error(`standalone sizing failed: ${JSON.stringify(standaloneState)}`);
+      }
+      standalone.close();
+      await browser?.send("Target.closeTarget", { targetId: standaloneTarget.id });
+      results.push({ name: "400x500 popup and 640x480 standalone sizing", ok: true });
+    } catch (err) {
+      results.push({ name: "400x500 popup and 640x480 standalone sizing", ok: false, error: (err as Error).message });
+    }
+
+    /* -------------------------- TEST 4: options page -------------------------- */
     try {
       const optionsUrl = `chrome-extension://${extensionId}/popup/options.html`;
       const target = await jsonNew(port, optionsUrl);
@@ -423,7 +547,7 @@ async function main(): Promise<number> {
       await sleep(1000);
       const mounted = await evaluate(
         optionsCdp,
-        `document.getElementById("root")?.children.length > 0`
+        `document.getElementById("root")?.children.length > 0 && !!document.querySelector('input[name="preview-text"][value="always-hide"]:checked')`
       );
       if (!mounted) throw new Error("options page #root has no children");
       results.push({ name: "options page loads and mounts", ok: true });
@@ -437,7 +561,7 @@ async function main(): Promise<number> {
       });
     }
 
-    /* ------------------------- TEST 3: overlay closes ------------------------- */
+    /* ------------------------- TEST 5: overlay closes ------------------------- */
     try {
       const toggleRes = await evaluate(sw, toggleExpr);
       const parsed = JSON.parse(toggleRes);
@@ -489,7 +613,7 @@ async function main(): Promise<number> {
   console.log("");
   console.log(`mode: ${mode}, runtime: ${(runtimeMs / 1000).toFixed(1)}s`);
 
-  const allPassed = results.length === 3 && results.every((r) => r.ok);
+  const allPassed = results.length === 5 && results.every((r) => r.ok);
   return allPassed ? 0 : 1;
 }
 

@@ -147,6 +147,29 @@ export async function clearAllCards(): Promise<void> {
   await tx(CARDS_STORE, "readwrite", (store) => store.clear());
 }
 
+/** Remove previously harvested prose while retaining non-text preview metadata. */
+export async function redactAllCardText(): Promise<void> {
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(CARDS_STORE, "readwrite");
+    const store = transaction.objectStore(CARDS_STORE);
+    const cursorRequest = store.openCursor();
+    cursorRequest.onsuccess = () => {
+      const cursor = cursorRequest.result;
+      if (!cursor) return;
+      const card = cursor.value as ContentCard;
+      if (card.description !== undefined || card.excerpt !== undefined) {
+        const { description: _description, excerpt: _excerpt, ...redacted } = card;
+        cursor.update(redacted);
+      }
+      cursor.continue();
+    };
+    cursorRequest.onerror = () => reject(cursorRequest.error);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
 export function countCards(): Promise<number> {
   return tx<number>(CARDS_STORE, "readonly", (store) => store.count());
 }

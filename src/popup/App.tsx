@@ -119,7 +119,7 @@ export function App() {
           }}
         />
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(60%_60%_at_50%_50%,transparent,rgba(5,6,10,0.42))]" />
-        <div className="relative w-full" style={{ maxWidth: 1040, height: 620 }}>
+        <div className="relative h-[min(620px,calc(100dvh-2rem))] min-h-[360px] w-full max-w-[1040px]">
           <TabPreviewView returnToTabId={standaloneContext?.returnToTabId ?? null} />
         </div>
       </div>

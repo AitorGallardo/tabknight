@@ -1,4 +1,11 @@
 import { extractContentCard } from "../popup/lib/preview/harvester";
+import {
+  DEFAULT_PREVIEW_TEXT_PREFERENCE,
+  PREVIEW_TEXT_PREFERENCE_KEY,
+  isPreviewTextPreference,
+  shouldSuppressPreviewText,
+  type PreviewTextPreference,
+} from "../popup/lib/preview/privacy";
 import type {
   MediaControlMessage,
   MediaControlResult,
@@ -25,10 +32,23 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean };
   // background, which persists it to IndexedDB. Best-effort and silent on error.
 
   let harvestTimer: number | undefined;
+  let previewTextPreference: PreviewTextPreference = DEFAULT_PREVIEW_TEXT_PREFERENCE;
+
+  void chrome.storage.local.get(PREVIEW_TEXT_PREFERENCE_KEY).then((stored) => {
+    const value = stored[PREVIEW_TEXT_PREFERENCE_KEY];
+    if (isPreviewTextPreference(value)) previewTextPreference = value;
+  }).catch(() => {});
+
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "local") return;
+    const value = changes[PREVIEW_TEXT_PREFERENCE_KEY]?.newValue;
+    previewTextPreference = isPreviewTextPreference(value) ? value : DEFAULT_PREVIEW_TEXT_PREFERENCE;
+  });
 
   function harvestCard(): void {
     try {
-      const card = extractContentCard();
+      const includePageText = !shouldSuppressPreviewText(document.location.href, previewTextPreference);
+      const card = extractContentCard(includePageText);
       if (!card.url || card.url.startsWith("about:")) return;
       const message: PreviewCardCaptureMessage = { type: "PREVIEW_CARD_CAPTURE", card };
       void chrome.runtime.sendMessage(message).catch(() => {
@@ -179,7 +199,7 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean };
       .tkp-backdrop.tkp-visible { opacity: 1; }
       .tkp-panel {
         position: relative;
-        width: min(1040px, 92vw); height: min(640px, 86vh);
+        width: min(1040px, 94vw); height: min(640px, 88dvh);
         border-radius: 18px; overflow: hidden;
         background: linear-gradient(180deg, rgba(28, 28, 30, 0.86), rgba(20, 20, 22, 0.84));
         border: 1px solid rgba(255, 255, 255, 0.1);
@@ -211,12 +231,23 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean };
         100% { background-position: -200% 0; }
       }
       .tkp-frame { width: 100%; height: 100%; border: 0; background: transparent; position: relative; }
+      @media (prefers-color-scheme: light) {
+        .tkp-panel {
+          background: linear-gradient(180deg, rgba(255,255,255,0.94), rgba(244,244,246,0.92));
+          border-color: rgba(0, 0, 0, 0.1);
+          box-shadow: 0 32px 90px rgba(0, 0, 0, 0.28);
+        }
+      }
+      @media (max-width: 700px), (max-height: 540px) {
+        .tkp-backdrop { align-items: stretch; }
+        .tkp-panel { width: calc(100vw - 16px); height: calc(100dvh - 16px); margin: 8px; border-radius: 14px; }
+      }
       @media (prefers-reduced-motion: reduce) {
         .tkp-backdrop, .tkp-panel, .tkp-skeleton, .tkp-skel-row { transition: none !important; animation: none !important; }
       }
     </style>
     <div class="tkp-backdrop" data-role="backdrop">
-      <div class="tkp-panel">
+      <div class="tkp-panel" role="dialog" aria-modal="true" aria-label="TabKnight tab switcher">
         <div class="tkp-skeleton" data-role="skeleton">
           <div class="tkp-skel-row tkp-skel-row--a"></div>
           <div class="tkp-skel-row tkp-skel-row--b"></div>

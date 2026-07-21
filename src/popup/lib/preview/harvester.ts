@@ -58,24 +58,26 @@ function extractExcerpt(): string | undefined {
 }
 
 /** Build a ContentCard from the current document. */
-export function extractContentCard(): ContentCard {
+export function extractContentCard(includePageText = true): ContentCard {
   const url = document.location.href;
 
   return {
     urlHash: hashUrl(url),
     url,
     title: (document.title || url).trim(),
-    description: meta([
-      "meta[property='og:description']",
-      "meta[name='description']",
-      "meta[name='twitter:description']",
-    ]),
+    description: includePageText
+      ? meta([
+          "meta[property='og:description']",
+          "meta[name='description']",
+          "meta[name='twitter:description']",
+        ])
+      : undefined,
     ogImage: absoluteUrl(
       meta(["meta[property='og:image']", "meta[name='twitter:image']", "meta[name='twitter:image:src']"])
     ),
     siteName: meta(["meta[property='og:site_name']"]),
     themeColor: meta(["meta[name='theme-color']"]),
-    excerpt: extractExcerpt(),
+    excerpt: includePageText ? extractExcerpt() : undefined,
     favIconUrl: faviconUrl(),
     scrollY: Math.round(window.scrollY) || 0,
     capturedAt: Date.now(),

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode, SyntheticEvent } from "react";
-import { AppWindow, Moon, Music, Pause, Pin, Play, Search, Volume2, VolumeX, X } from "lucide-react";
+import { AppWindow, EyeOff, Moon, Music, Pause, Pin, Play, Search, Volume2, VolumeX, X } from "lucide-react";
 import { activateTab, getAllTabs, setTabMuted } from "../lib/chrome-api";
 import { getAllCards, getThumbnail } from "../lib/preview/db";
 import { hashUrl } from "../lib/preview/hash";
@@ -16,8 +16,17 @@ import type {
 import { AudioEq } from "../components/AudioEq";
 import { Favicon } from "../components/Favicon";
 import { Kbd } from "../components/Kbd";
+import { ResultLabels } from "../components/ResultLabels";
 import { scoreTab } from "../lib/rank";
 import { useListNavigation } from "../hooks/useListNavigation";
+import {
+  DEFAULT_PREVIEW_TEXT_PREFERENCE,
+  PREVIEW_TEXT_PREFERENCE_KEY,
+  getPreviewTextPreference,
+  isPreviewTextPreference,
+  shouldSuppressPreviewText,
+  type PreviewTextPreference,
+} from "../lib/preview/privacy";
 
 interface TabPreviewViewProps {
   returnToTabId?: number | null;
@@ -171,7 +180,7 @@ function rowGlyphs(tab: NavigatorTab, currentWindowId: number | null): RowGlyph[
 function RowGlyphs({ tab, currentWindowId, active }: { tab: NavigatorTab; currentWindowId: number | null; active: boolean }) {
   const glyphs = rowGlyphs(tab, currentWindowId);
   if (glyphs.length === 0) return null;
-  const iconClass = active ? "h-3 w-3 text-white/75" : "h-3 w-3 text-white/35";
+  const iconClass = active ? "h-3 w-3 text-white/85" : "h-3 w-3 text-black/40 dark:text-white/35";
   return (
     <span className="flex shrink-0 items-center gap-1">
       {glyphs.map((glyph) => {
@@ -187,13 +196,13 @@ function RowGlyphs({ tab, currentWindowId, active }: { tab: NavigatorTab; curren
           case "pinned":
             return <Pin key="pinned" className={iconClass} />;
           case "discarded":
-            return <Moon key="discarded" className={active ? "h-3 w-3 text-white/75" : "h-3 w-3 text-white/30"} />;
+            return <Moon key="discarded" className={active ? "h-3 w-3 text-white/85" : "h-3 w-3 text-black/35 dark:text-white/30"} />;
           case "other-window":
             return (
               <span
                 key="other-window"
                 className={`grid place-items-center rounded-[3px] border px-1 text-[9px] leading-none ${
-                  active ? "border-white/25 text-white/75" : "border-white/15 text-white/40"
+                  active ? "border-white/35 text-white/85" : "border-black/15 text-black/45 dark:border-white/15 dark:text-white/40"
                 }`}
               >
                 <AppWindow className="h-2.5 w-2.5" />
@@ -332,6 +341,22 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   // Tabs-mode selection to restore when coming back from audio mode.
   const rememberedTabId = useRef<number | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  const [previewTextPreference, setPreviewTextPreference] = useState<PreviewTextPreference>(
+    DEFAULT_PREVIEW_TEXT_PREFERENCE
+  );
+  const [revealedTextHash, setRevealedTextHash] = useState<string | null>(null);
+
+  useEffect(() => {
+    void getPreviewTextPreference().then(setPreviewTextPreference);
+    const onStorageChange = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
+      if (areaName !== "local") return;
+      const value = changes[PREVIEW_TEXT_PREFERENCE_KEY]?.newValue;
+      setPreviewTextPreference(isPreviewTextPreference(value) ? value : DEFAULT_PREVIEW_TEXT_PREFERENCE);
+      setRevealedTextHash(null);
+    };
+    chrome.storage.onChanged.addListener(onStorageChange);
+    return () => chrome.storage.onChanged.removeListener(onStorageChange);
+  }, []);
   // Gates the featured-rail entrance stagger (tk-row-in) to the very first
   // paint that has real rows — flips false once loading finishes, so a later
   // re-rank (search, activation) never replays the stagger.
@@ -697,6 +722,24 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
 
   const activeTabItem = displayList[activeIndex];
   const activeCard = activeTabItem ? cards.get(hashUrl(activeTabItem.url)) : undefined;
+  const activeCardHash = activeTabItem ? hashUrl(activeTabItem.url) : null;
+  const previewTextSuppressed = !!activeTabItem && shouldSuppressPreviewText(activeTabItem.url, previewTextPreference);
+  const previewTextVisible = !previewTextSuppressed || revealedTextHash === activeCardHash;
+  const visibleCard =
+    previewTextVisible || !activeCard
+      ? activeCard
+      : { ...activeCard, description: undefined, excerpt: undefined };
+
+  useEffect(() => {
+    if (loading) return;
+    if (!activeTabItem) {
+      setAnnouncement(mode === "audio" ? "No audio tabs" : "No matching tabs");
+      return;
+    }
+    setAnnouncement(
+      `${activeTabItem.title}, ${activeIndex + 1} of ${displayList.length}. ${mode === "audio" ? "Audio tab" : "Open tab"}. Enter to switch.`
+    );
+  }, [activeTabItem?.id, activeIndex, displayList.length, loading, mode, query]);
 
   // "Now playing" media block (audio mode only): 1Hz poll of the selected
   // row's playback position. Kept in its own state, separate from `playback`,
@@ -1231,23 +1274,18 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
       // A held key firing repeat events would otherwise flap mode (remount
       // flicker on Tab) or race toggles (Space); consume without acting.
       if (event.repeat) return true;
-      if (event.key === "Tab") {
-        event.preventDefault();
-        if (mode === "tabs") enterAudioMode();
-        else enterTabsMode();
-        return true;
-      }
-      if (mode === "audio" && query === "" && event.key === " ") {
+      const fromSearch = event.target === inputRef.current;
+      if (mode === "audio" && fromSearch && query === "" && event.key === " ") {
         event.preventDefault();
         toggleSelectedPlay();
         return true;
       }
-      if (mode === "audio" && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+      if (mode === "audio" && fromSearch && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
         event.preventDefault();
         toggleSelectedMute();
         return true;
       }
-      if (mode === "audio" && query === "" && event.key === "Backspace") {
+      if (mode === "audio" && fromSearch && query === "" && event.key === "Backspace") {
         event.preventDefault();
         enterTabsMode();
         return true;
@@ -1275,7 +1313,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
 
   const footer =
     mode === "audio" ? (
-      <div className="flex items-center justify-end gap-4 border-t border-white/[0.07] px-6 py-3 text-[11px] text-white/50">
+      <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1 border-t border-black/[0.07] px-4 py-2.5 text-[11px] text-black/55 dark:border-white/[0.07] dark:text-white/50">
         <span className="flex items-center gap-1.5">
           <Kbd>space</Kbd> Play/pause
         </span>
@@ -1286,31 +1324,27 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           <Kbd>↵</Kbd> Switch to tab
         </span>
         <span className="flex items-center gap-1.5">
-          <Kbd>tab</Kbd> Tabs
+          <Kbd>backspace</Kbd> Tabs
         </span>
         <span className="flex items-center gap-1.5">
           <Kbd>esc</Kbd> {query !== "" ? "Clear" : "Back"}
         </span>
       </div>
     ) : (
-      <div className="flex items-center justify-end gap-4 border-t border-white/[0.07] px-6 py-3 text-[11px] text-white/50">
+      <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1 border-t border-black/[0.07] px-4 py-2.5 text-[11px] text-black/55 dark:border-white/[0.07] dark:text-white/50">
         <span className="flex items-center gap-1.5">
           <Kbd>↵</Kbd> Switch to tab
         </span>
         <span className="flex items-center gap-1.5">
           <Kbd>esc</Kbd> {query !== "" ? "Clear" : "Close"}
         </span>
-        {playingCount > 0 && (
-          <span className="flex items-center gap-1.5">
-            <Kbd>tab</Kbd> ♪
-          </span>
-        )}
+        <span className="flex items-center gap-1.5">Audio is available beside Search</span>
       </div>
     );
 
   return (
     <div
-      className="grid h-full w-full grid-cols-[340px_1fr] overflow-hidden rounded-[18px] border border-white/10 bg-[linear-gradient(180deg,rgba(28,28,30,0.86),rgba(20,20,22,0.84))] text-[#f5f5f7] shadow-[0_32px_90px_rgba(0,0,0,0.55)] backdrop-blur-[30px]"
+      className="tk-preview grid h-full w-full grid-cols-[clamp(260px,36%,360px)_minmax(0,1fr)] overflow-hidden rounded-[18px] border border-black/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(244,244,246,0.92))] text-zinc-950 shadow-[0_32px_90px_rgba(0,0,0,0.28)] backdrop-blur-[30px] dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(28,28,30,0.86),rgba(20,20,22,0.84))] dark:text-[#f5f5f7] dark:shadow-[0_32px_90px_rgba(0,0,0,0.55)]"
       style={{
         fontFamily:
           '-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", system-ui, sans-serif',
@@ -1320,41 +1354,44 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
         {announcement}
       </div>
       {/* Left rail: search + grouped tab list */}
-      <div className="flex min-h-0 flex-col border-r border-white/[0.07]">
-        <div className="flex items-center gap-2 border-b border-white/[0.07] px-3 py-3">
-          <Search className="h-4 w-4 shrink-0 text-white/55" />
+      <div className="flex min-h-0 flex-col border-r border-black/[0.07] dark:border-white/[0.07]">
+        <div className="m-2 mb-0 flex items-center gap-2 rounded-xl border border-[#0068d9]/25 bg-white/75 px-3 py-2 shadow-sm ring-2 ring-[#0068d9]/15 focus-within:ring-[#0068d9]/45 dark:border-white/[0.07] dark:bg-white/[0.035] dark:ring-[#0a84ff]/20 dark:focus-within:ring-[#0a84ff]/50">
+          <Search className="h-4 w-4 shrink-0 text-black/50 dark:text-white/55" />
           <input
             ref={inputRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search tabs…"
-            className="h-8 w-full border-none bg-transparent text-base font-medium tracking-[-0.01em] text-white/92 outline-none placeholder:text-white/30"
+            className="h-8 w-full min-w-0 border-none bg-transparent text-lg font-semibold tracking-[-0.02em] text-black/90 outline-none placeholder:text-black/30 dark:text-white/95 dark:placeholder:text-white/30"
             autoComplete="off"
             spellCheck={false}
             aria-label="Search tabs"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-controls="tk-results"
+            aria-expanded="true"
+            aria-activedescendant={activeTabItem ? `tk-row-${activeTabItem.id}` : undefined}
           />
-          {(playingCount > 0 || mode === "audio") && (
-            <button
+          <button
               type="button"
               onClick={() => (mode === "audio" ? enterTabsMode() : enterAudioMode())}
-              className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors active:scale-[0.97] ${
+              className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium transition-colors active:scale-[0.97] focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/60 ${
                 mode === "audio"
-                  ? "bg-[#0a84ff]/20 text-[#5eaeff] ring-1 ring-[#0a84ff]/40"
-                  : "bg-white/[0.08] text-white/70 hover:bg-white/[0.12]"
+                  ? "bg-[#0057b8] text-white ring-1 ring-[#0057b8] dark:bg-[#0a84ff]/20 dark:text-[#5eaeff] dark:ring-[#0a84ff]/40"
+                  : "bg-black/[0.06] text-black/70 hover:bg-black/[0.10] dark:bg-white/[0.08] dark:text-white/70 dark:hover:bg-white/[0.12]"
               }`}
-              aria-label={`${playingCount} tab${playingCount === 1 ? "" : "s"} playing audio — toggle audio panel`}
+              aria-label={`Audio tabs, ${audioList.length} available — ${mode === "audio" ? "show all tabs" : "show audio controls"}`}
               aria-pressed={mode === "audio"}
             >
               <span className="scale-[0.8]" aria-hidden="true">
                 <AudioEq playing />
               </span>
-              {playingCount} playing
+              Audio {audioList.length > 0 ? audioList.length : ""}
             </button>
-          )}
           <button
             type="button"
             onClick={() => void dismiss(true)}
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-white/55 transition-colors active:scale-[0.97] hover:bg-white/[0.12] hover:text-white/80"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-black/[0.06] text-black/55 transition-colors active:scale-[0.97] hover:bg-black/[0.12] hover:text-black/80 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/60 dark:bg-white/[0.06] dark:text-white/55 dark:hover:bg-white/[0.12] dark:hover:text-white/80"
             aria-label="Close preview"
           >
             <X className="h-3.5 w-3.5" />
@@ -1363,22 +1400,22 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
 
         <div
           ref={listRef}
+          id="tk-results"
           role="listbox"
           aria-label={mode === "audio" ? "Tabs playing audio" : "Open tabs"}
-          aria-activedescendant={activeTabItem ? `tk-row-${activeTabItem.id}` : undefined}
-          className="min-h-0 flex-1 overflow-auto overscroll-contain px-2 py-2"
+          className="min-h-0 flex-1 overflow-auto overscroll-contain px-2 py-1.5"
         >
           <div key={mode} className="tk-mode-fade space-y-0.5">
           {mode === "audio" ? (
             <>
-              <div className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-white/30">
+              <div className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-black/40 dark:text-white/30">
                 Now playing
               </div>
               {audioList.length === 0 && (
                 <div className="flex flex-col items-center gap-2 px-4 py-12 text-center">
-                  <Music className="h-6 w-6 text-white/25" />
-                  <div className="text-xs text-white/45">No tabs are playing audio</div>
-                  <div className="text-[11px] text-white/30">Press Tab to go back</div>
+                  <Music className="h-6 w-6 text-black/25 dark:text-white/25" />
+                  <div className="text-xs text-black/55 dark:text-white/45">No tabs are playing audio</div>
+                  <div className="text-[11px] text-black/40 dark:text-white/30">Use the Audio button to show all tabs</div>
                 </div>
               )}
               {audioList.map((tab, index) => {
@@ -1391,23 +1428,24 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                 return (
                   <div
                     key={tab.id}
-                    id={`tk-row-${tab.id}`}
-                    role="option"
-                    aria-selected={active}
-                    ref={registerItem(index)}
                     onMouseEnter={() => setActiveIndex(index)}
                     style={audioList.length > CONTENT_VISIBILITY_THRESHOLD ? { contentVisibility: "auto", containIntrinsicSize: ROW_CONTAIN_SIZE } : undefined}
-                    className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 transition-colors duration-100 ${
-                      active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]"
+                    className={`flex w-full items-center gap-1.5 rounded-[9px] px-1.5 py-1 transition-colors duration-100 ${
+                      active ? "bg-[#0057b8] text-white ring-2 ring-inset ring-white/55 dark:bg-[#0a84ff]" : "text-black/80 hover:bg-black/[0.05] dark:text-white/80 dark:hover:bg-white/[0.06]"
                     } ${tab.muted ? "opacity-60" : ""}`}
                   >
                     <button
+                      id={`tk-row-${tab.id}`}
+                      role="option"
+                      aria-selected={active}
+                      aria-label={`${tab.title}. Audio tab. Switch to tab.`}
+                      ref={registerItem(index)}
                       type="button"
                       onClick={() => void activate(tab)}
-                      className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-white/70"
                     >
                       <span
-                        className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${
+                        className={`grid h-5 w-5 shrink-0 place-items-center overflow-hidden rounded-[5px] ${
                           active ? "bg-white/20" : "bg-white/[0.08] text-white/80"
                         }`}
                       >
@@ -1418,14 +1456,13 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                         <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">
                           {highlightTitle(tab.title, query, active)}
                         </span>
-                        <span className={`block truncate text-[11px] ${active ? "text-white/70" : "text-white/45"}`}>
+                        <span className={`block truncate text-[11px] ${active ? "text-white/85" : "text-black/50 dark:text-white/45"}`}>
                           {hint ?? domainOf(tab.url)}
                         </span>
                       </span>
                     </button>
-                    <span
-                      role="button"
-                      tabIndex={-1}
+                    <button
+                      type="button"
                       aria-label={
                         uncontrollable
                           ? `Playback unavailable for ${tab.title}`
@@ -1439,25 +1476,24 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                         event.stopPropagation();
                         if (!uncontrollable) void sendPlayToggle(tab);
                       }}
-                      className={`grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-white/70 transition-colors active:scale-90 hover:bg-white/[0.12] ${
+                      className={`grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.12] text-white/90 transition-colors active:scale-90 hover:bg-white/[0.2] focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-white/75 ${
                         uncontrollable ? "cursor-not-allowed opacity-40" : "cursor-pointer"
                       }`}
                     >
                       {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-                    </span>
-                    <span
-                      role="button"
-                      tabIndex={-1}
+                    </button>
+                    <button
+                      type="button"
                       aria-label={tab.muted ? `Unmute ${tab.title}` : `Mute ${tab.title}`}
                       aria-pressed={tab.muted}
                       onClick={(event) => {
                         event.stopPropagation();
                         toggleMute(tab);
                       }}
-                      className="grid h-7 w-7 shrink-0 cursor-pointer place-items-center rounded-full bg-white/[0.06] text-white/70 transition-colors active:scale-90 hover:bg-white/[0.12]"
+                      className="grid h-7 w-7 shrink-0 cursor-pointer place-items-center rounded-full bg-white/[0.12] text-white/90 transition-colors active:scale-90 hover:bg-white/[0.2] focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-white/75"
                     >
                       {tab.muted ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
-                    </span>
+                    </button>
                   </div>
                 );
               })}
@@ -1509,7 +1545,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                   return (
                     <div key={tab.id}>
                       {header && (
-                        <div className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-white/30">
+                        <div className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-black/40 dark:text-white/30">
                           {header}
                         </div>
                       )}
@@ -1530,16 +1566,17 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                             : undefined),
                           ...(showEntrance ? { animationDelay: `${index * 18}ms` } : undefined),
                         }}
-                        className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${showEntrance ? "tk-row-in" : ""} ${
+                        aria-label={`${tab.title}. Open tab. Switch.${tab.pinned ? " Pinned." : ""}${tab.audible ? " Playing audio." : ""}${tab.muted ? " Muted." : ""}${tab.discarded ? " Discarded." : ""}`}
+                        className={`flex w-full items-center gap-2 rounded-[9px] px-2 py-1 text-left transition-colors duration-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/70 ${showEntrance ? "tk-row-in" : ""} ${
                           active
-                            ? "bg-[#0a84ff] text-white"
+                            ? "bg-[#0057b8] text-white ring-2 ring-inset ring-white/55 shadow-sm dark:bg-[#0a84ff]"
                             : isFeatured
-                              ? "bg-[#0a84ff]/[0.06] text-white/80 hover:bg-[#0a84ff]/[0.10]"
-                              : "text-white/80 hover:bg-white/[0.06]"
+                              ? "bg-[#0068d9]/[0.07] text-black/80 hover:bg-[#0068d9]/[0.12] dark:text-white/80"
+                              : "text-black/80 hover:bg-black/[0.05] dark:text-white/80 dark:hover:bg-white/[0.06]"
                         } ${tab.discarded ? "opacity-[0.55]" : ""}`}
                       >
                         <span
-                          className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${
+                          className={`grid h-5 w-5 shrink-0 place-items-center overflow-hidden rounded-[5px] ${
                             active ? "bg-white/20" : "bg-white/[0.08] text-white/80"
                           }`}
                         >
@@ -1550,11 +1587,12 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                             {highlightTitle(tab.title, query, active)}
                           </span>
                           {isDuplicateTitle && (
-                            <span className={`block truncate text-[11px] ${active ? "text-white/70" : "text-white/45"}`}>
+                            <span className={`block truncate text-[11px] ${active ? "text-white/85" : "text-black/50 dark:text-white/45"}`}>
                               {domainOf(tab.url)}
                             </span>
                           )}
                         </span>
+                        <ResultLabels active={active} />
                         <RowGlyphs tab={tab} currentWindowId={currentWindowId} active={active} />
                       </button>
                     </div>
@@ -1669,42 +1707,70 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                     }}
                   />
                 )}
-                {heroTier === "typographic" && <HeroTypographicCard tab={activeTabItem} card={activeCard} />}
+                {heroTier === "typographic" && <HeroTypographicCard tab={activeTabItem} card={visibleCard} />}
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-auto overscroll-contain px-6 py-5">
-              <div className="mb-1 flex items-center gap-2 text-[11px] text-white/45">
+            <div className="min-h-0 flex-1 overflow-auto overscroll-contain px-5 py-4">
+              <div className="mb-1 flex items-center gap-2 text-[11px] text-black/50 dark:text-white/45">
                 <span className="truncate">{activeCard?.siteName || domainOf(activeTabItem.url)}</span>
                 {heroTier !== "thumb-cover" && heroTier !== "thumb-contain" && activeCard?.capturedAt && (
                   <>
-                    <span className="text-white/25">·</span>
+                    <span className="text-black/25 dark:text-white/25">·</span>
                     <span className="shrink-0">captured {relativeTime(activeCard.capturedAt, now)}</span>
                   </>
                 )}
               </div>
 
-              <h2 className="text-[19px] font-semibold leading-snug tracking-[-0.02em] text-white/95">
+              <h2 className="text-[19px] font-semibold leading-snug tracking-[-0.02em] text-black/95 dark:text-white/95">
                 {activeTabItem.title}
               </h2>
-              <div className="mt-1 truncate text-xs text-white/45">{activeTabItem.url}</div>
+              <div className="mt-1 truncate text-xs text-black/50 dark:text-white/45">{activeTabItem.url}</div>
 
               {activeAudioTab && mediaStatus?.tabId === activeAudioTab.id && (
                 <MediaNowPlaying tab={activeAudioTab} status={mediaStatus.result} />
               )}
 
-              {activeCard?.description && (
-                <p className="mt-4 text-sm leading-relaxed text-white/75">{activeCard.description}</p>
+              {visibleCard?.description && (
+                <p className="mt-4 text-sm leading-relaxed text-black/75 dark:text-white/75">{visibleCard.description}</p>
               )}
 
-              {activeCard?.excerpt && (
-                <p className="mt-4 whitespace-pre-line text-[13px] leading-relaxed text-white/55">
-                  {activeCard.excerpt}
+              {visibleCard?.excerpt && (
+                <p className="mt-4 whitespace-pre-line text-[13px] leading-relaxed text-black/60 dark:text-white/55">
+                  {visibleCard.excerpt}
                 </p>
               )}
 
+              {previewTextSuppressed && (
+                <div className="mt-4 flex items-start gap-2 rounded-lg border border-black/10 bg-black/[0.035] px-3 py-2.5 text-xs text-black/60 dark:border-white/10 dark:bg-white/[0.04] dark:text-white/55">
+                  <EyeOff className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium text-black/75 dark:text-white/75">
+                      {activeCard?.description || activeCard?.excerpt ? "Page text hidden" : "Page text not collected"}
+                    </div>
+                    <div className="mt-0.5 leading-relaxed">
+                      {previewTextPreference === "always-hide"
+                        ? "Your privacy setting keeps descriptions and page excerpts out of previews."
+                        : "This URL looks sensitive, so descriptions and page excerpts stay hidden."}
+                    </div>
+                    {(activeCard?.description || activeCard?.excerpt) && revealedTextHash !== activeCardHash && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRevealedTextHash(activeCardHash);
+                          setAnnouncement("Page text shown for this preview only");
+                        }}
+                        className="mt-2 rounded-md border border-black/15 bg-white/60 px-2 py-1 text-[11px] font-medium text-black/75 hover:bg-white focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/60 dark:border-white/15 dark:bg-white/[0.07] dark:text-white/75 dark:hover:bg-white/[0.12]"
+                      >
+                        Show for this preview
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {!activeCard && !thumb && (
-                <p className="mt-6 text-xs text-white/40">
+                <p className="mt-6 text-xs text-black/45 dark:text-white/40">
                   No snapshot yet — visit this tab once and TabKnight will capture a preview.
                 </p>
               )}
