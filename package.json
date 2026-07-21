@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "smoke": "bun scripts/smoke.ts",
+    "smoke:commands": "bun scripts/browser-commands-smoke.ts",
     "package": "bun scripts/package.ts"
   },
   "dependencies": {
