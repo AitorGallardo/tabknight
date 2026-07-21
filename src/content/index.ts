@@ -20,12 +20,14 @@ import type {
 // and timer below — duplicate keydown handlers, duplicate overlay hosts,
 // Cmd+K flashing open-then-closed. Guard the whole module body behind a flag
 // stashed on `window` so only the first injection takes effect.
-type TabknightWindow = Window & { __tabknightLoaded?: boolean };
+type TabknightWindow = Window & { __tabknightLoaded?: boolean; __tabknightDocumentToken?: string };
 
 (function main() {
   const win = window as TabknightWindow;
   if (win.__tabknightLoaded) return;
   win.__tabknightLoaded = true;
+  win.__tabknightDocumentToken ??= crypto.randomUUID();
+  const documentToken = win.__tabknightDocumentToken;
 
   /* -------------------------- content-card harvester ------------------------ */
   // Build a lightweight preview snapshot of this page and hand it to the
@@ -117,6 +119,11 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean };
   let previewFallbackTimer: number | undefined;
   let previewReady = false;
   let previewClosing = false;
+  let previewCloseTimer: number | undefined;
+  let previewFrame: HTMLIFrameElement | null = null;
+  let previewInvocationId: string | null = null;
+  let previewStartedAt = 0;
+  let previewFallbackSent = false;
   // Set as soon as the user (or a "close" postMessage) dismisses the overlay,
   // so a frame.onerror firing during the close animation can't mistake the
   // dismissal for a load failure and pop an unwanted standalone tab.
@@ -126,6 +133,15 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean };
     return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   }
 
+  function finishPreviewClose(host = previewHost): void {
+    window.clearTimeout(previewCloseTimer);
+    host?.remove();
+    if (previewHost === host) previewHost = null;
+    previewFrame = null;
+    previewInvocationId = null;
+    previewClosing = false;
+  }
+
   function closePreviewOverlay(): void {
     previewDismissed = true;
     if (!previewHost || previewClosing) return;
@@ -133,11 +149,7 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean };
     const backdrop = host.shadowRoot?.querySelector<HTMLElement>("[data-role='backdrop']");
     window.clearTimeout(previewFallbackTimer);
 
-    const finish = () => {
-      host.remove();
-      if (previewHost === host) previewHost = null;
-      previewClosing = false;
-    };
+    const finish = () => finishPreviewClose(host);
 
     if (!backdrop || prefersReducedMotion()) {
       finish();
@@ -158,20 +170,35 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean };
       if (event.target === backdrop && event.propertyName === "opacity") settle();
     };
     backdrop.addEventListener("transitionend", onTransitionEnd);
-    window.setTimeout(settle, PREVIEW_MOTION_BACKSTOP_MS);
+    previewCloseTimer = window.setTimeout(settle, PREVIEW_MOTION_BACKSTOP_MS);
   }
 
-  function triggerPreviewFallback(): void {
-    if (previewReady || previewDismissed) return;
+  function triggerPreviewFallback(cause: "overlay-timeout" | "overlay-error"): void {
+    if (previewReady || previewDismissed || previewFallbackSent || !previewInvocationId) return;
+    previewFallbackSent = true;
     window.clearTimeout(previewFallbackTimer);
+    const invocationId = previewInvocationId;
     closePreviewOverlay();
-    void chrome.runtime.sendMessage({ type: "PREVIEW_FALLBACK_STANDALONE" }).catch(() => {});
+    void chrome.runtime
+      .sendMessage({
+        type: "PREVIEW_FALLBACK_STANDALONE",
+        invocationId,
+        documentToken,
+        cause,
+        elapsedMs: Math.max(0, Date.now() - previewStartedAt),
+      })
+      .catch(() => {});
   }
 
-  function openPreviewOverlay(): void {
+  function openPreviewOverlay(invocationId: string, startedAt: number): void {
     if (previewHost) {
-      closePreviewOverlay();
-      return;
+      if (!previewClosing) {
+        closePreviewOverlay();
+        return;
+      }
+      // A third rapid toggle arrived during the close animation. Complete the
+      // prior teardown synchronously, then create the new generation.
+      finishPreviewClose();
     }
 
     const host = document.createElement("div");
@@ -181,8 +208,13 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean };
     previewHost = host;
     previewReady = false;
     previewDismissed = false;
+    previewFallbackSent = false;
+    previewInvocationId = invocationId;
+    previewStartedAt = startedAt;
 
-    const src = chrome.runtime.getURL("popup/index.html?overlay=1");
+    const src = chrome.runtime.getURL(
+      `popup/index.html?overlay=1&invocation=${encodeURIComponent(invocationId)}`
+    );
 
     shadow.innerHTML = `
     <style>
@@ -264,8 +296,9 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean };
     });
 
     const frame = shadow.querySelector<HTMLIFrameElement>(".tkp-frame");
+    previewFrame = frame;
     frame?.addEventListener("load", () => frame.contentWindow?.focus());
-    if (frame) frame.onerror = () => triggerPreviewFallback();
+    if (frame) frame.onerror = () => triggerPreviewFallback("overlay-error");
 
     if (backdrop) {
       if (prefersReducedMotion()) {
@@ -277,13 +310,24 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean };
 
     // If the iframe never signals "ready" (e.g. CSP blocked it, or a real load
     // failure), degrade to a tab. A loaded-but-slow React app keeps waiting.
-    previewFallbackTimer = window.setTimeout(triggerPreviewFallback, PREVIEW_FALLBACK_BACKSTOP_MS);
+    previewFallbackTimer = window.setTimeout(
+      () => triggerPreviewFallback("overlay-timeout"),
+      PREVIEW_FALLBACK_BACKSTOP_MS
+    );
   }
 
   // Messages from the React app inside the iframe (cross-frame postMessage).
   window.addEventListener("message", (event) => {
-    const data = event.data as { source?: string; type?: string } | undefined;
-    if (data?.source !== "tabknight-preview") return;
+    const data = event.data as { source?: string; type?: string; invocationId?: string } | undefined;
+    const expectedOrigin = new URL(chrome.runtime.getURL("/")).origin;
+    if (
+      data?.source !== "tabknight-preview" ||
+      data.invocationId !== previewInvocationId ||
+      event.origin !== expectedOrigin ||
+      event.source !== previewFrame?.contentWindow
+    ) {
+      return;
+    }
     if (data.type === "ready") {
       previewReady = true;
       window.clearTimeout(previewFallbackTimer);
@@ -373,9 +417,13 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean };
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message?.type === "PREVIEW_OVERLAY_TOGGLE") {
-      openPreviewOverlay();
-      sendResponse({ ok: true });
+    if (
+      message?.type === "PREVIEW_OVERLAY_TOGGLE" &&
+      typeof message.invocationId === "string" &&
+      typeof message.startedAt === "number"
+    ) {
+      openPreviewOverlay(message.invocationId, message.startedAt);
+      sendResponse({ ok: true, documentToken });
       return true;
     }
 

@@ -8,18 +8,32 @@ import { OptionsView } from "./views/OptionsView";
 import { CmdKHintBanner } from "./components/CmdKHintBanner";
 import { POPUP_HEIGHT, POPUP_WIDTH } from "./lib/constants";
 import type { AppView, SaveSummary } from "./types";
+import { fallbackExplanation } from "../shared/invocation";
 
 interface StandaloneContext {
   backgroundImage?: string;
   returnToTabId?: number;
   returnToWindowId?: number;
   createdAt?: number;
+  cause?: string;
+  elapsedMs?: number;
+}
+
+function isStandaloneContext(value: unknown): value is StandaloneContext {
+  if (!value || typeof value !== "object") return false;
+  const context = value as StandaloneContext;
+  return (
+    typeof context.createdAt === "number" &&
+    (context.returnToTabId === undefined || typeof context.returnToTabId === "number") &&
+    (context.returnToWindowId === undefined || typeof context.returnToWindowId === "number")
+  );
 }
 
 export function App() {
   const searchParams = new URLSearchParams(window.location.search);
   const isStandalonePreview = searchParams.get("standalone") === "1";
   const isOverlay = searchParams.get("overlay") === "1";
+  const invocationId = searchParams.get("invocation");
   // options.html is a distinct file (not a query param on index.html) so the
   // options_ui manifest entry never depends on whether Chrome preserves a
   // query string on that page.
@@ -28,20 +42,27 @@ export function App() {
   const [view, setView] = useState<AppView>("navigator");
   const [saveSummary, setSaveSummary] = useState<SaveSummary | null>(null);
   const [standaloneContext, setStandaloneContext] = useState<StandaloneContext | null>(null);
+  const [contextReady, setContextReady] = useState(!isStandalonePreview);
 
   useEffect(() => {
-    if (!isStandalonePreview || !contextId) return;
+    if (!isStandalonePreview) return;
+    if (!contextId?.startsWith("preview-")) {
+      setStandaloneContext({});
+      setContextReady(true);
+      return;
+    }
 
     let cancelled = false;
 
     const loadContext = async () => {
-      const stored = await chrome.storage.local.get(contextId);
-      const context = stored[contextId] as StandaloneContext | undefined;
-
-      await chrome.storage.local.remove(contextId);
-
-      if (!cancelled) {
-        setStandaloneContext(context ?? {});
+      try {
+        const stored = await chrome.storage.local.get(contextId);
+        const context = stored[contextId];
+        if (!cancelled) setStandaloneContext(isStandaloneContext(context) ? context : {});
+      } catch {
+        if (!cancelled) setStandaloneContext({});
+      } finally {
+        if (!cancelled) setContextReady(true);
       }
     };
 
@@ -87,12 +108,19 @@ export function App() {
   if (isOverlay) {
     return (
       <div className="h-screen w-screen overflow-hidden bg-transparent">
-        <TabPreviewView overlay returnToTabId={null} />
+        <TabPreviewView overlay invocationId={invocationId} returnToTabId={null} />
       </div>
     );
   }
 
   if (isStandalonePreview) {
+    if (!contextReady) {
+      return (
+        <div className="grid min-h-screen place-items-center bg-[#05060a] text-xs text-white/60">
+          Preparing TabKnight…
+        </div>
+      );
+    }
     return (
       <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#05060a] p-4">
         {standaloneContext?.backgroundImage && (
@@ -119,8 +147,17 @@ export function App() {
           }}
         />
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(60%_60%_at_50%_50%,transparent,rgba(5,6,10,0.42))]" />
-        <div className="relative h-[min(620px,calc(100dvh-2rem))] min-h-[360px] w-full max-w-[1040px]">
-          <TabPreviewView returnToTabId={standaloneContext?.returnToTabId ?? null} />
+        <div className="relative flex h-[min(650px,calc(100dvh-2rem))] min-h-[360px] w-full max-w-[1040px] flex-col">
+          <div className="mb-2 flex h-7 shrink-0 items-center justify-between rounded-lg border border-white/10 bg-black/35 px-2.5 text-[11px] text-white/65 backdrop-blur-xl">
+            <span>{fallbackExplanation(standaloneContext?.cause)}</span>
+            <span className="text-white/40">Esc returns to your tab</span>
+          </div>
+          <div className="min-h-0 flex-1">
+            <TabPreviewView
+              contextId={contextId}
+              returnToTabId={standaloneContext?.returnToTabId ?? null}
+            />
+          </div>
         </div>
       </div>
     );

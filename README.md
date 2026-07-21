@@ -12,7 +12,7 @@
 [![React 18](https://img.shields.io/badge/React_18-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.27.0-6366f1?style=for-the-badge)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.29.0-6366f1?style=for-the-badge)](./CHANGELOG.md)
 
 </div>
 
@@ -84,7 +84,11 @@ Press `⌘ K` and a command palette blends in over the current page; you never g
 
 </div>
 
-- **Live fuzzy search** across every open tab in **every window** — matches title and URL, with matches highlighted in the row.
+- **Universal intent search** across open tabs in **every window**, bookmarks,
+  and recent local history, plus explicit direct-URL and web-search actions.
+  Empty search stays tab-only and instant; bookmark/history lookups begin only
+  after you type and are never retained by TabKnight. A query leaves the device
+  only when you explicitly activate the web-search result.
 - **Featured rail.** When you haven't typed anything, "Recent" and "Most visited" (top 5 each, by this session's visit count) surface above the full list with a subtle blue tint — the tabs you're most likely to want, one glance away.
 - **Tiered, truthful previews.** Each result renders the best tier available *right now* and upgrades in place — no spinners, no empty panes, and nothing pretends to be higher fidelity than it is:
   - **Tier 0** — favicon + title (instant, always).
@@ -142,7 +146,8 @@ Descriptions and visible-page excerpts are off by default. Options can keep them
 
 The capabilities that make it feel instant and reliable:
 
-- **In-page without the mess.** The overlay is a content-script **shadow-DOM host** that paints a blurred backdrop, with an **extension-origin `<iframe>`** hosting the React panel. The shadow root isolates it from arbitrary site CSS; the iframe origin gives the panel direct IndexedDB access. If the iframe can't load (strict CSP), it falls back to the standalone tab.
+- **In-page without the mess.** The overlay is a content-script **shadow-DOM host** that paints a blurred backdrop, with an **extension-origin `<iframe>`** hosting the React panel. The shadow root isolates it from arbitrary site CSS; the iframe origin gives the panel direct IndexedDB access. If the iframe can't load (strict CSP), it falls back to a compact standalone tab that explains why and returns to the origin on Escape.
+- **Privacy-safe invocation diagnostics.** The last 24 invocation outcomes are available in extension local storage under `invocationDiagnostics` for troubleshooting. Each event contains only overlay/fallback mode, a coarse cause, elapsed milliseconds, loading status, and discarded state—never a URL, title, query, or page content.
 - **Snapshot pipeline — page → background → IndexedDB.** Content scripts can't reach the extension DB directly, so the content script *harvests* lightweight content cards (title, `og:*`, theme color, a short text excerpt) and messages them to the background service worker, which persists them to **IndexedDB** keyed by a normalized-URL hash.
 - **Real thumbnails, politely captured.** The active tab is screenshotted via `chrome.tabs.captureVisibleTab`, downscaled to **WebP** at up to 1600px, and stored as a blob with its dimensions and capture time. Captures are **throttled per-tab and serialized globally** to respect Chrome's rate limits, and the store is **LRU-evicted** so it never grows unbounded.
 - **Favicon fallback chain.** Each row tries the tab's own `favIconUrl`, then Chrome's local favicon cache (via the `favicon` permission — no network request), then a letter tile — all local, no network.
@@ -159,6 +164,7 @@ Declared in [`public/manifest.json`](public/manifest.json) — each maps to a re
 | --- | --- |
 | `tabs` | Enumerate, activate, create, and close tabs; read titles/URLs/favicons |
 | `bookmarks` | Save and restore tab sets as bookmark folders |
+| `history` | Search matching titles and URLs in Chrome's local recent-history index; results stay in memory only while the command surface is open |
 | `activeTab` | Keeps the overlay and thumbnail capture working on the current tab if you restrict site access to "when you click the extension" |
 | `scripting` | (Re)inject the content script on supported pages; read a page's media-session info (track title/artwork) for the audio panel |
 | `storage` | Hand off context between the background worker and the fallback UI; session-scoped visit counts |

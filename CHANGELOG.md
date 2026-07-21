@@ -25,6 +25,43 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Real-Chrome smoke coverage now includes light/wide, dark/narrow, popup, and
   standalone sizing contracts.
 
+### Added in integrated command surface
+
+- Compact standalone fallback explanations for restricted, loading, and
+  discarded tabs, with Escape restoring the originating tab.
+- Bounded local invocation diagnostics containing only mode, cause, timing,
+  tab status, and discarded state — never URLs or page content.
+- Focused lifecycle tests and expanded real-Chrome smoke coverage for overlay
+  ownership, focus, message spoofing, fallback restoration, and teardown.
+- Universal intent search in both the rich Cmd+K overlay and compact fallback:
+  one query now ranks open tabs, bookmarks, recent local history, direct URL
+  navigation, and an explicit web-search action.
+- Deterministic pure cross-source ranking with stable typed result identities,
+  source/action labels, URL validation, bookmark/history deduplication, and
+  focused Bun unit coverage.
+- The `history` permission, used only for bounded local lookups after at least
+  two characters are typed; results remain in memory only while the command
+  surface is open.
+
+### Changed
+
+- Async bookmark/history arrivals retain the selected result by identity, so
+  keyboard activation does not silently move to another destination.
+- Empty-query behavior remains the existing tab-only featured rail and rich
+  preview fast path.
+
+### Fixed
+
+- Cmd+K invocations are serialized per window and bound to an invocation plus
+  document token, preventing duplicate hosts, stale fallbacks, and reinjection
+  races while keeping separate windows independent.
+- Standalone fallbacks are deduplicated per window and clean up their stored
+  context even after a service-worker restart.
+- Overlay lifecycle messages now require the current iframe source, extension
+  origin, and invocation token; arbitrary standalone storage keys are rejected.
+- Fallback backdrop captures are discarded when the active tab no longer
+  matches the originating tab.
+
 ## [0.28.0] - 2026-07-13
 
 ### Added
