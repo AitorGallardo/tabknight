@@ -21,14 +21,16 @@ import { useListNavigation } from "../hooks/useListNavigation";
 
 interface TabPreviewViewProps {
   returnToTabId?: number | null;
+  contextId?: string | null;
   /** When true, the view is embedded in an in-page iframe overlay. Dismissal
    *  closes the overlay via postMessage instead of closing a standalone tab. */
   overlay?: boolean;
+  invocationId?: string | null;
 }
 
-function postToParent(type: "ready" | "close"): void {
+function postToParent(type: "ready" | "close", invocationId?: string | null): void {
   try {
-    window.parent.postMessage({ source: "tabknight-preview", type }, "*");
+    window.parent.postMessage({ source: "tabknight-preview", type, invocationId }, "*");
   } catch {
     // No parent / cross-origin restriction — safe to ignore.
   }
@@ -307,7 +309,12 @@ function HeroTypographicCard({ tab, card }: { tab: NavigatorTab; card?: ContentC
   );
 }
 
-export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPreviewViewProps) {
+export function TabPreviewView({
+  returnToTabId = null,
+  contextId = null,
+  overlay = false,
+  invocationId = null,
+}: TabPreviewViewProps) {
   const [tabs, setTabs] = useState<NavigatorTab[]>([]);
   const [cards, setCards] = useState<Map<string, ContentCard>>(new Map());
   // tabId -> times activated this session, maintained by the background;
@@ -438,15 +445,15 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     if (!overlay || readySentRef.current) return;
     if (!loading) {
       readySentRef.current = true;
-      postToParent("ready");
+      postToParent("ready", invocationId);
       return;
     }
     const timer = setTimeout(() => {
       readySentRef.current = true;
-      postToParent("ready");
+      postToParent("ready", invocationId);
     }, 1500);
     return () => clearTimeout(timer);
-  }, [overlay, loading]);
+  }, [invocationId, overlay, loading]);
 
   // Grow the sticky audio set / seed playback state whenever a tab becomes
   // audible or muted (initial load, or the live-update effect below).
@@ -1075,7 +1082,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     async (restoreOrigin: boolean) => {
       if (overlay) {
         // We never left the page — just dismiss the floating panel.
-        postToParent("close");
+        postToParent("close", invocationId);
         return;
       }
       if (restoreOrigin && returnToTabId !== null) {
@@ -1090,6 +1097,9 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
       try {
         const current = await chrome.tabs.getCurrent();
         if (current?.id !== undefined) {
+          if (contextId?.startsWith("preview-")) {
+            await chrome.storage.local.remove(contextId).catch(() => {});
+          }
           await chrome.tabs.remove(current.id);
           return;
         }
@@ -1098,7 +1108,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
       }
       window.close();
     },
-    [overlay, returnToTabId]
+    [contextId, invocationId, overlay, returnToTabId]
   );
 
   const showRowHint = useCallback((tabId: number, message: string) => {

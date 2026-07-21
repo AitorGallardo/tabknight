@@ -20,6 +20,9 @@ To power tab previews (the Cmd+K overlay) and tab search, TabKnight handles:
   list. Per-session tab-visit counts power the "Most visited" section and are
   discarded when you close the browser.
 - **Favicons**, read from Chrome's local favicon cache (no network request).
+- **Coarse invocation diagnostics**: overlay/fallback mode, fallback cause,
+  elapsed time, loading status, and discarded state. The bounded 24-event
+  history never includes URLs, titles, queries, or page content.
 
 ## Where it lives
 
@@ -28,8 +31,8 @@ Everything is stored **locally in your browser**, on your device:
 - Content cards and screenshots live in an IndexedDB database scoped to the
   extension (`tabknight-preview`).
 - A handful of small flags (e.g. the dismissed first-run hint) and
-  session-scoped visit counts live in `chrome.storage.local` /
-  `chrome.storage.session`.
+  bounded invocation diagnostics live in `chrome.storage.local`; session-scoped
+  visit counts live in `chrome.storage.session`.
 
 ## What never happens
 
@@ -52,6 +55,7 @@ Storage is capped and self-pruning (LRU, oldest first):
 - Up to **300** page snapshots ("cards").
 - Up to **150** screenshots ("thumbnails").
 - Session visit counts are cleared automatically when the browser closes.
+- Invocation diagnostics retain only the most recent **24** events.
 
 Older entries are evicted automatically as new ones are captured. To delete
 everything now, open TabKnight's options page (right-click the toolbar icon →

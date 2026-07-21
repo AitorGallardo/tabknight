@@ -4,6 +4,29 @@ All notable changes to TabKnight are documented in this file.
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.29.0] - 2026-07-21
+
+### Added
+
+- Compact standalone fallback explanations for restricted, loading, and
+  discarded tabs, with Escape restoring the originating tab.
+- Bounded local invocation diagnostics containing only mode, cause, timing,
+  tab status, and discarded state — never URLs or page content.
+- Focused lifecycle tests and expanded real-Chrome smoke coverage for overlay
+  ownership, focus, message spoofing, fallback restoration, and teardown.
+
+### Fixed
+
+- Cmd+K invocations are serialized per window and bound to an invocation plus
+  document token, preventing duplicate hosts, stale fallbacks, and reinjection
+  races while keeping separate windows independent.
+- Standalone fallbacks are deduplicated per window and clean up their stored
+  context even after a service-worker restart.
+- Overlay lifecycle messages now require the current iframe source, extension
+  origin, and invocation token; arbitrary standalone storage keys are rejected.
+- Fallback backdrop captures are discarded when the active tab no longer
+  matches the originating tab.
+
 ## [0.28.0] - 2026-07-13
 
 ### Added
