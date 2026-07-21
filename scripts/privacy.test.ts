@@ -26,8 +26,31 @@ describe("preview text privacy", () => {
     expect(shouldSuppressPreviewText("https://example.com", "sensitive")).toBe(false);
   });
 
-  test("redacts legacy prose once when the privacy-safe default is first observed", async () => {
+  test("keeps rich preview text when no preference has been saved", async () => {
     const stored: Record<string, unknown> = {};
+    const originalChrome = globalThis.chrome;
+    let redactions = 0;
+    globalThis.chrome = {
+      storage: {
+        local: {
+          get: async (key: string) => ({ [key]: stored[key] }),
+          set: async (values: Record<string, unknown>) => Object.assign(stored, values),
+        },
+      },
+    } as typeof chrome;
+
+    try {
+      await ensurePreviewTextPrivacy(async () => { redactions += 1; });
+      await ensurePreviewTextPrivacy(async () => { redactions += 1; });
+      expect(redactions).toBe(0);
+      expect(stored[PREVIEW_TEXT_REDACTION_VERSION_KEY]).toBeUndefined();
+    } finally {
+      globalThis.chrome = originalChrome;
+    }
+  });
+
+  test("redacts legacy prose once after a restrictive preference is selected", async () => {
+    const stored: Record<string, unknown> = { previewTextPreference: "sensitive" };
     const originalChrome = globalThis.chrome;
     let redactions = 0;
     globalThis.chrome = {

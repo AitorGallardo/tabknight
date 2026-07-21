@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { executeBrowserCommand } from "../src/popup/lib/browser-command-executor";
-import { findBrowserCommands } from "../src/popup/lib/browser-commands";
+import { findBrowserCommands, getBrowserCommand } from "../src/popup/lib/browser-commands";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -10,7 +10,10 @@ const regular = { id: 7, title: "Example", pinned: false, muted: false };
 const pinnedMuted = { ...regular, pinned: true, muted: true };
 
 assert(findBrowserCommands("", { targetTab: regular }).length === 0, "Empty search must stay tab-only");
+assert(findBrowserCommands(">", { targetTab: regular }).length === 6, "> must reveal every available command");
+assert(findBrowserCommands("> dup", { targetTab: regular })[0]?.id === "duplicate-tab", "> must filter commands");
 assert(findBrowserCommands("close", { targetTab: regular })[0]?.id === "close-tab", "Close must be discoverable");
+assert(getBrowserCommand("close-tab", { targetTab: regular })?.shortcut === "⌥W / Alt+W", "Close shortcut must be visible");
 for (const [query, id] of [
   ["close tab", "close-tab"],
   ["duplicate tab", "duplicate-tab"],

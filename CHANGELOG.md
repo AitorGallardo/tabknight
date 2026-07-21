@@ -4,6 +4,22 @@ All notable changes to TabKnight are documented in this file.
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.30.0] - 2026-07-22
+
+### Added
+
+- A compact Quick actions strip in the command palette for close, duplicate,
+  pin/unpin, and mute/unmute, including visible Option/Alt shortcuts.
+- `>` command mode: type `>` to reveal every available browser command or
+  continue typing to filter the command-only list.
+
+### Changed
+
+- The search placeholder now teaches command discovery without displacing tab
+  results in the empty state.
+- Rich, locally stored page descriptions and excerpts are enabled by default;
+  users can still hide them on sensitive-looking URLs or everywhere.
+
 ## [0.29.0] - 2026-07-21
 
 ### Added

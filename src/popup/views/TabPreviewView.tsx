@@ -3,8 +3,8 @@ import type { ReactNode, SyntheticEvent } from "react";
 import { AppWindow, Bookmark, Clock3, Command, EyeOff, Globe2, Moon, Music, Pause, Pin, Play, Search, Volume2, VolumeX, X } from "lucide-react";
 import { activateTab, getAllTabs, openUrlAsTab, searchBookmarks, searchHistory, setTabMuted } from "../lib/chrome-api";
 import { executeBrowserCommand } from "../lib/browser-command-executor";
-import { findBrowserCommands } from "../lib/browser-commands";
-import type { BrowserCommand, BrowserCommandTab } from "../lib/browser-commands";
+import { findBrowserCommands, getBrowserCommand, listBrowserCommands } from "../lib/browser-commands";
+import type { BrowserCommand, BrowserCommandId, BrowserCommandTab } from "../lib/browser-commands";
 import { getAllCards, getThumbnail, redactAllCardText } from "../lib/preview/db";
 import { hashUrl } from "../lib/preview/hash";
 import type {
@@ -119,6 +119,13 @@ const ROW_CONTAIN_SIZE = "0 36px";
 const ROW_CONTAIN_SIZE_DUPLICATE = "0 44px";
 /** Only pay the content-visibility bookkeeping cost once lists get long. */
 const CONTENT_VISIBILITY_THRESHOLD = 60;
+
+const QUICK_ACTION_CODE_TO_COMMAND: Readonly<Record<string, BrowserCommandId>> = {
+  KeyW: "close-tab",
+  KeyD: "duplicate-tab",
+  KeyR: "reload-tab",
+  KeyN: "new-tab",
+};
 
 /* --------------------------- featured rail spec ---------------------------- */
 const FEATURED_RECENT_COUNT = 5;
@@ -370,7 +377,7 @@ export function TabPreviewView({
     const requestId = ++intentRequestRef.current;
     setIntentBookmarks([]);
     setIntentHistory([]);
-    if (!q || mode !== "tabs") return;
+    if (!q || q.startsWith(">") || mode !== "tabs") return;
 
     void searchBookmarks(q)
       .then((nodes) => {
@@ -779,6 +786,18 @@ export function TabPreviewView({
     () => (mode === "tabs" ? findBrowserCommands(query, { targetTab: commandTarget }) : []),
     [mode, query, commandTarget]
   );
+  const commandMode = mode === "tabs" && query.trimStart().startsWith(">");
+  const availableCommands = useMemo(
+    () => (mode === "tabs" ? listBrowserCommands({ targetTab: commandTarget }) : []),
+    [mode, commandTarget]
+  );
+  const quickActions = useMemo(
+    () =>
+      availableCommands.filter(({ id }) =>
+        ["close-tab", "duplicate-tab", "pin-tab", "unpin-tab", "mute-tab", "unmute-tab"].includes(id)
+      ),
+    [availableCommands]
+  );
 
   // Keyboard navigation indexes one typed list so commands and all intent
   // sources preserve their visual order under Arrow keys and Enter.
@@ -793,7 +812,9 @@ export function TabPreviewView({
             score: 0,
             tab,
           }))
-        : query.trim()
+        : commandMode
+          ? []
+          : query.trim()
           ? intentResults
           : orderedTabs.map((tab) => ({
               type: "tab",
@@ -808,7 +829,7 @@ export function TabPreviewView({
         ...intents.map((intent) => ({ kind: "intent" as const, id: intent.key, intent })),
       ];
     },
-    [mode, audioList, query, intentResults, orderedTabs, commandResults]
+    [mode, audioList, query, intentResults, orderedTabs, commandResults, commandMode]
   );
 
   // Identity re-anchoring: `activeIndex` is a raw index into `displayItems`,
@@ -1494,6 +1515,22 @@ export function TabPreviewView({
       // A held key firing repeat events would otherwise flap mode (remount
       // flicker on Tab) or race toggles (Space); consume without acting.
       if (event.repeat) return true;
+      if (mode === "tabs" && fromSearch && event.altKey && !event.metaKey && !event.ctrlKey) {
+        const commandId =
+          event.code === "KeyP"
+            ? commandTarget?.pinned ? "unpin-tab" : "pin-tab"
+            : event.code === "KeyM"
+              ? commandTarget?.muted ? "unmute-tab" : "mute-tab"
+              : QUICK_ACTION_CODE_TO_COMMAND[event.code];
+        const command = commandId
+          ? getBrowserCommand(commandId, { targetTab: commandTarget })
+          : undefined;
+        if (command) {
+          event.preventDefault();
+          void runCommand(command);
+          return true;
+        }
+      }
       if (mode === "audio" && fromSearch && query === "" && event.key === " ") {
         event.preventDefault();
         toggleSelectedPlay();
@@ -1511,7 +1548,7 @@ export function TabPreviewView({
       }
       return false;
     },
-    [mode, query, enterAudioMode, enterTabsMode, toggleSelectedPlay, toggleSelectedMute]
+    [mode, query, commandTarget, runCommand, enterAudioMode, enterTabsMode, toggleSelectedPlay, toggleSelectedMute]
   );
 
   const { listRef, registerItem } = useListNavigation({
@@ -1556,7 +1593,8 @@ export function TabPreviewView({
         <span className="flex items-center gap-1.5">
           <Kbd>esc</Kbd> {query !== "" ? "Clear" : "Close"}
         </span>
-        <span className="flex items-center gap-1.5">Audio is available beside Search</span>
+        <span className="flex items-center gap-1.5"><Kbd>&gt;</Kbd> Commands</span>
+        <span className="flex items-center gap-1.5"><Kbd>⌥</Kbd> Quick actions</span>
       </div>
     );
 
@@ -1578,8 +1616,11 @@ export function TabPreviewView({
           <input
             ref={inputRef}
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search tabs, bookmarks, history, or the web…"
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setActiveIndex(0);
+            }}
+            placeholder="Search anything… Type > for commands"
             className="h-8 w-full min-w-0 border-none bg-transparent text-lg font-semibold tracking-[-0.02em] text-black/90 outline-none placeholder:text-black/30 dark:text-white/95 dark:placeholder:text-white/30"
             autoComplete="off"
             spellCheck={false}
@@ -1615,6 +1656,35 @@ export function TabPreviewView({
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
+
+        {mode === "tabs" && query === "" && quickActions.length > 0 && (
+          <div className="flex items-center gap-1 overflow-x-auto px-2 py-1 text-[10px] text-black/50 dark:text-white/45">
+            <span className="shrink-0 px-1 font-semibold uppercase tracking-[0.08em]">Quick</span>
+            {quickActions.map((command) => (
+              <button
+                key={command.id}
+                type="button"
+                onClick={() => void runCommand(command)}
+                className="flex shrink-0 items-center gap-1 rounded-md border border-black/10 bg-black/[0.035] px-1.5 py-1 text-black/65 transition-colors hover:bg-black/[0.08] focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/50 dark:border-white/10 dark:bg-white/[0.035] dark:text-white/65 dark:hover:bg-white/[0.08]"
+                aria-label={`${command.actionLabel}. Shortcut ${command.shortcut}`}
+              >
+                <span>{command.actionLabel.replace(" Tab", "")}</span>
+                {command.shortcut && <Kbd>{command.shortcut.split(" / ")[0]}</Kbd>}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => {
+                setQuery(">");
+                setActiveIndex(0);
+                queueMicrotask(focusInputAtEnd);
+              }}
+              className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[#0057b8] hover:bg-[#0057b8]/10 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/50 dark:text-[#5eaeff]"
+            >
+              All commands <Kbd>&gt;</Kbd>
+            </button>
+          </div>
+        )}
 
         <div
           ref={listRef}
@@ -1731,7 +1801,7 @@ export function TabPreviewView({
               )}
               {!loading && displayList.length === 0 && (
                 <div className="px-3 py-2 text-xs text-white/55">
-                  {query.trim() ? "No matching tabs or commands" : "No other tabs open"}
+                  {commandMode ? "No matching commands" : query.trim() ? "No matching destinations" : "No other tabs open"}
                 </div>
               )}
 
@@ -1771,7 +1841,7 @@ export function TabPreviewView({
                   </button>
                 );
               })}
-              {!loading && query.trim() &&
+              {!loading && !commandMode && query.trim() &&
                 intentResults.map((item, index) => {
                   const resultIndex = commandResults.length + index;
                   const active = resultIndex === activeIndex;

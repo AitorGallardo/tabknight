@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { EyeOff, Keyboard, ShieldCheck, Trash2 } from "lucide-react";
+import { Eye, Keyboard, ShieldCheck, Trash2 } from "lucide-react";
 import { clearAllCards, clearAllThumbnails, countCards, countThumbnails, redactAllCardText } from "../lib/preview/db";
 import {
   DEFAULT_PREVIEW_TEXT_PREFERENCE,
@@ -165,7 +165,7 @@ export function OptionsView() {
 
         <section className={panelClass} aria-labelledby="preview-text-heading">
           <div id="preview-text-heading" className="flex items-center gap-2 text-sm font-semibold text-white/90">
-            <EyeOff className="h-4 w-4 text-[#5eaeff]" />
+            <Eye className="h-4 w-4 text-[#5eaeff]" />
             Page text in previews
           </div>
           <p className="mt-2 text-xs leading-relaxed text-white/55">
@@ -173,9 +173,9 @@ export function OptionsView() {
           </p>
           <fieldset className="mt-3 space-y-1.5">
             {([
-              ["always-hide", "Hide page text", "Recommended — no descriptions or body excerpts are collected."],
+              ["always-show", "Show on all sites", "Default — rich descriptions and short excerpts, stored only in this browser."],
               ["sensitive", "Hide on sensitive sites", "Uses a local URL check for mail, banking, account, and private areas."],
-              ["always-show", "Show on all sites", "Collects and displays descriptions and short body excerpts locally."],
+              ["always-hide", "Hide page text", "No descriptions or body excerpts are collected."],
             ] as const).map(([value, label, description]) => (
               <label
                 key={value}

@@ -15,8 +15,9 @@ To power tab previews (the Cmd+K overlay) and tab search, TabKnight handles:
   background tabs, and never anything outside the browser.
 - **Lightweight content cards** harvested from pages you have open: the page's
   title, `og:image` URL, `og:site_name`, and theme color. Descriptions and a
-  short excerpt of visible text are **off by default**. Options can keep them
-  off, suppress them on sensitive-looking URLs, or explicitly enable them.
+  short excerpt of visible text are **on by default** for richer previews and
+  remain stored locally. Options can suppress them on sensitive-looking URLs
+  or disable them everywhere.
 - **Tab titles and URLs** of your open tabs, read to build the searchable tab
   list. Per-session tab-visit counts power the "Most visited" section and are
   discarded when you close the browser.

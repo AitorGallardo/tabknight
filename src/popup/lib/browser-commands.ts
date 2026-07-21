@@ -38,7 +38,7 @@ const COMMANDS: readonly CommandDefinition[] = [
     label: "Close Current Tab",
     actionLabel: "Close Tab",
     description: "Close the tab behind TabKnight",
-    shortcut: "⌘/Ctrl W",
+    shortcut: "⌥W / Alt+W",
     keywords: ["close", "close tab", "remove", "current tab"],
     available: ({ targetTab }) => targetTab !== null,
   },
@@ -47,6 +47,7 @@ const COMMANDS: readonly CommandDefinition[] = [
     label: "Duplicate Current Tab",
     actionLabel: "Duplicate Tab",
     description: "Open a copy of the current tab",
+    shortcut: "⌥D / Alt+D",
     keywords: ["duplicate", "duplicate tab", "copy", "clone", "current tab"],
     available: ({ targetTab }) => targetTab !== null,
   },
@@ -55,6 +56,7 @@ const COMMANDS: readonly CommandDefinition[] = [
     label: "Pin Current Tab",
     actionLabel: "Pin Tab",
     description: "Keep the current tab at the start of its window",
+    shortcut: "⌥P / Alt+P",
     keywords: ["pin", "pin tab", "keep", "current tab"],
     available: ({ targetTab }) => targetTab !== null && !targetTab.pinned,
   },
@@ -63,6 +65,7 @@ const COMMANDS: readonly CommandDefinition[] = [
     label: "Unpin Current Tab",
     actionLabel: "Unpin Tab",
     description: "Return the current tab to the regular tab strip",
+    shortcut: "⌥P / Alt+P",
     keywords: ["unpin", "unpin tab", "pin", "pin tab", "current tab"],
     available: ({ targetTab }) => targetTab !== null && targetTab.pinned,
   },
@@ -71,6 +74,7 @@ const COMMANDS: readonly CommandDefinition[] = [
     label: "Mute Current Tab",
     actionLabel: "Mute Tab",
     description: "Silence audio from the current tab",
+    shortcut: "⌥M / Alt+M",
     keywords: ["mute", "mute tab", "sound", "audio", "current tab"],
     available: ({ targetTab }) => targetTab !== null && !targetTab.muted,
   },
@@ -79,6 +83,7 @@ const COMMANDS: readonly CommandDefinition[] = [
     label: "Unmute Current Tab",
     actionLabel: "Unmute Tab",
     description: "Restore audio from the current tab",
+    shortcut: "⌥M / Alt+M",
     keywords: ["unmute", "unmute tab", "mute", "mute tab", "sound", "audio", "current tab"],
     available: ({ targetTab }) => targetTab !== null && !!targetTab.muted,
   },
@@ -87,7 +92,7 @@ const COMMANDS: readonly CommandDefinition[] = [
     label: "Reload Current Tab",
     actionLabel: "Reload Tab",
     description: "Refresh the current page",
-    shortcut: "⌘/Ctrl R",
+    shortcut: "⌥R / Alt+R",
     keywords: ["reload", "reload tab", "refresh", "current tab"],
     available: ({ targetTab }) => targetTab !== null,
   },
@@ -96,7 +101,7 @@ const COMMANDS: readonly CommandDefinition[] = [
     label: "New Tab",
     actionLabel: "Open New Tab",
     description: "Open a blank tab",
-    shortcut: "⌘/Ctrl T",
+    shortcut: "⌥N / Alt+N",
     keywords: ["new", "new tab", "open", "blank", "tab"],
     available: () => true,
   },
@@ -108,6 +113,23 @@ export function isBrowserCommandAvailable(
   context: BrowserCommandContext
 ): boolean {
   return COMMANDS.find((command) => command.id === commandId)?.available(context) ?? false;
+}
+
+function publicCommand(command: CommandDefinition): BrowserCommand {
+  const { available: _available, ...result } = command;
+  return result;
+}
+
+export function getBrowserCommand(
+  commandId: BrowserCommandId,
+  context: BrowserCommandContext
+): BrowserCommand | undefined {
+  const command = COMMANDS.find((candidate) => candidate.id === commandId);
+  return command?.available(context) ? publicCommand(command) : undefined;
+}
+
+export function listBrowserCommands(context: BrowserCommandContext): BrowserCommand[] {
+  return COMMANDS.filter((command) => command.available(context)).map(publicCommand);
 }
 
 function scoreCommand(command: BrowserCommand, query: string): number {
@@ -126,13 +148,13 @@ function scoreCommand(command: BrowserCommand, query: string): number {
 
 /** Pure command discovery: filtering never performs a browser action. */
 export function findBrowserCommands(query: string, context: BrowserCommandContext): BrowserCommand[] {
-  if (!query.trim()) return [];
+  const trimmed = query.trim();
+  const commandMode = trimmed.startsWith(">");
+  const commandQuery = commandMode ? trimmed.slice(1).trim() : trimmed;
+  if (!commandQuery) return commandMode ? listBrowserCommands(context) : [];
   return COMMANDS.filter((command) => isBrowserCommandAvailable(command.id, context))
-    .map((command, index) => ({ command, index, score: scoreCommand(command, query) }))
+    .map((command, index) => ({ command, index, score: scoreCommand(command, commandQuery) }))
     .filter(({ score }) => score > 0)
     .sort((a, b) => b.score - a.score || a.index - b.index)
-    .map(({ command }) => {
-      const { available: _available, ...result } = command;
-      return result;
-    });
+    .map(({ command }) => publicCommand(command));
 }

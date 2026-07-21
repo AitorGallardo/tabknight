@@ -10,7 +10,7 @@
  *   3. Host-page spoofed lifecycle messages are ignored.
  *   4. Popup and standalone sizing stay within their viewports.
  *   5. Universal intent search renders all available typed sources.
- *   6. The privacy options page loads with page text disabled by default.
+ *   6. The privacy options page loads with rich page text enabled by default.
  *   7. The overlay closes cleanly.
  *   8. A restricted-page fallback explains itself, focuses search, and Escape
  *      closes it while restoring the origin tab.
@@ -506,7 +506,7 @@ async function main(): Promise<number> {
                 sourceLabels: Array.from(document.querySelectorAll('span')).some((el) => el.textContent?.trim() === 'Tab'),
                 audioControl: !!audioControl,
                 controlsKeepNativeKeys,
-                privacyCopy: document.body.textContent?.includes('Page text not collected') ?? false,
+                commandHint: document.querySelector('input')?.getAttribute('placeholder')?.includes('Type > for commands') ?? false,
                 selectedBackground: selected ? getComputedStyle(selected).backgroundColor : null,
                 noHorizontalOverflow: document.documentElement.scrollWidth <= innerWidth,
                 viewport: [innerWidth, innerHeight],
@@ -514,7 +514,7 @@ async function main(): Promise<number> {
             })()`
               )
             );
-            return observed.hasCombo && observed.activeDescendant && observed.sourceLabels && observed.privacyCopy
+            return observed.hasCombo && observed.activeDescendant && observed.sourceLabels && observed.commandHint
               ? observed
               : null;
           },
@@ -527,7 +527,7 @@ async function main(): Promise<number> {
           !state.sourceLabels ||
           !state.audioControl ||
           !state.controlsKeepNativeKeys ||
-          !state.privacyCopy ||
+          !state.commandHint ||
           !state.noHorizontalOverflow ||
           state.viewport[0] !== scenario.width ||
           state.viewport[1] !== scenario.height
@@ -673,7 +673,7 @@ async function main(): Promise<number> {
       await sleep(1000);
       const mounted = await evaluate(
         optionsCdp,
-        `document.getElementById("root")?.children.length > 0 && !!document.querySelector('input[name="preview-text"][value="always-hide"]:checked')`
+        `document.getElementById("root")?.children.length > 0 && !!document.querySelector('input[name="preview-text"][value="always-show"]:checked')`
       );
       if (!mounted) throw new Error("options page #root has no children");
       results.push({ name: "options page loads and mounts", ok: true });

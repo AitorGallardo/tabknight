@@ -12,7 +12,7 @@
 [![React 18](https://img.shields.io/badge/React_18-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.29.0-6366f1?style=for-the-badge)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.30.0-6366f1?style=for-the-badge)](./CHANGELOG.md)
 
 </div>
 
@@ -50,6 +50,13 @@ TabKnight is keyboard-first by design — you rarely need the mouse.
 | `Enter` | Switch to the selected tab (or open the typed query) |
 | `Tab` | Move focus through Search, Audio, Close, and row controls |
 | `Esc` | Staged close — clears the query, then steps back from Audio mode, then closes |
+| `>` | Show all browser commands; keep typing to filter them |
+| `⌥ W` · `Alt W` | Close the current tab |
+| `⌥ D` · `Alt D` | Duplicate the current tab |
+| `⌥ P` · `Alt P` | Pin/unpin the current tab |
+| `⌥ M` · `Alt M` | Mute/unmute the current tab |
+| `⌥ R` · `Alt R` | Reload the current tab |
+| `⌥ N` · `Alt N` | Open a new tab |
 | _type…_ | Filter instantly — the search stays focused even if focus drifts |
 | `Backspace` | Edit the query without clicking back into the input |
 
@@ -140,7 +147,7 @@ Chrome blocks extensions from injecting UI into its own internal pages (`chrome:
 
 A first-run hint shows you the actual bound shortcut the first time you install (or offers to set one) and dismisses itself once you use it. The **options page** (right-click the toolbar icon → Options) shows live counts and the approximate size of your stored preview data, in plain language, with a one-click **Clear preview data** purge. See [`PRIVACY.md`](PRIVACY.md) for exactly what's collected and how it's capped.
 
-Descriptions and visible-page excerpts are off by default. Options can keep them off, allow them only on URLs that do not look sensitive, or explicitly enable them everywhere. Restrictive modes also redact previously stored descriptions and excerpts; titles, URLs, preview images, and screenshots are controlled separately.
+Descriptions and visible-page excerpts are on by default for a richer local preview. Options can hide them on sensitive-looking URLs or everywhere. Restrictive modes also redact previously stored descriptions and excerpts; titles, URLs, preview images, and screenshots are controlled separately.
 
 ## 🧠 Under the hood
 
