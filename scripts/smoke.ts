@@ -5,10 +5,13 @@
  * Launches a real Chrome with the built extension, drives it over the Chrome
  * DevTools Protocol (plain WebSocket + fetch, no npm deps), and asserts that:
  *
- *   1. The preview overlay (Cmd+K) injects and renders on a live page.
+ *   1. The preview overlay injects exactly once and focuses its frame.
  *   2. Universal intent search renders all available typed sources.
- *   3. The options page loads and mounts React.
- *   4. The overlay closes cleanly.
+ *   3. Host-page spoofed lifecycle messages are ignored.
+ *   4. The options page loads and mounts React.
+ *   5. The overlay closes cleanly.
+ *   6. A restricted-page fallback explains itself, focuses search, and Escape
+ *      closes it while restoring the origin tab.
  *
  * Chrome >= 137 (stable) ignores --load-extension, so the extension is loaded
  * via the CDP `Extensions.loadUnpacked` command, which requires launching with
@@ -25,7 +28,6 @@ import { join } from "node:path";
 
 const REPO_ROOT = new URL("..", import.meta.url).pathname;
 const DIST_DIR = join(REPO_ROOT, "dist");
-const TEST_URL = "https://example.com/";
 
 /* --------------------------------- utils --------------------------------- */
 
@@ -214,6 +216,15 @@ async function main(): Promise<number> {
   const userDataDir = await mkdtemp(join(tmpdir(), "tabknight-smoke-"));
   const port = await findFreePort();
   const chromeBinary = findChromeBinary();
+  const testServer = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () =>
+      new Response("<!doctype html><title>TabKnight smoke page</title><main>Local test page</main>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+  });
+  const testUrl = `http://127.0.0.1:${testServer.port}/`;
 
   const baseFlags = [
     `--remote-debugging-port=${port}`,
@@ -233,7 +244,7 @@ async function main(): Promise<number> {
   const results: TestResult[] = [];
 
   function launch(headless: boolean): ReturnType<typeof Bun.spawn> {
-    const flags = headless ? [...baseFlags, "--headless=new", TEST_URL] : [...baseFlags, TEST_URL];
+    const flags = headless ? [...baseFlags, "--headless=new", testUrl] : [...baseFlags, testUrl];
     return Bun.spawn([chromeBinary, ...flags], {
       stdout: "ignore",
       stderr: "ignore",
@@ -249,15 +260,15 @@ async function main(): Promise<number> {
     );
   }
 
-  // Wait for DevTools + the example.com page target, load the extension via
+  // Wait for DevTools + the loopback page target, load the extension via
   // CDP if --load-extension was ignored, and wait for our service worker.
   async function setUp(): Promise<{ extensionId: string; swWsUrl: string }> {
     await waitFor(
       async () => {
         const list = await jsonList(port);
-        return list.find((t) => t.type === "page" && t.url.startsWith("https://example.com"));
+        return list.find((t) => t.type === "page" && t.url === testUrl);
       },
-      { timeoutMs: 8000, intervalMs: 300, label: "example.com page target in /json/list" }
+      { timeoutMs: 8000, intervalMs: 300, label: "loopback page target in /json/list" }
     );
 
     browser?.close();
@@ -323,7 +334,7 @@ async function main(): Promise<number> {
     await evaluate(
       sw,
       `(async () => {
-        const [tab] = await chrome.tabs.query({ url: "${TEST_URL}" });
+        const [tab] = await chrome.tabs.query({ url: "${testUrl}" });
         await chrome.tabs.reload(tab.id);
         return "reloaded";
       })()`
@@ -334,7 +345,7 @@ async function main(): Promise<number> {
           sw,
           `(async () => {
             try {
-              const [tab] = await chrome.tabs.query({ url: "${TEST_URL}" });
+              const [tab] = await chrome.tabs.query({ url: "${testUrl}" });
               if (!tab) return "no-tab";
               await chrome.tabs.sendMessage(tab.id, { type: "MEDIA_STATUS" });
               return "ready";
@@ -353,9 +364,9 @@ async function main(): Promise<number> {
     const pageTarget = await waitFor(
       async () => {
         const list = await jsonList(port);
-        return list.find((t) => t.type === "page" && t.url.startsWith("https://example.com"));
+        return list.find((t) => t.type === "page" && t.url === testUrl);
       },
-      { timeoutMs: 5000, intervalMs: 250, label: "example.com page target after reload" }
+      { timeoutMs: 5000, intervalMs: 250, label: "loopback page target after reload" }
     );
     if (!pageTarget.webSocketDebuggerUrl) {
       throw new Error("page target has no webSocketDebuggerUrl after reload");
@@ -364,8 +375,12 @@ async function main(): Promise<number> {
     await page.send("Runtime.enable");
 
     const toggleExpr = `(async () => {
-      const [tab] = await chrome.tabs.query({ url: "${TEST_URL}" });
-      const res = await chrome.tabs.sendMessage(tab.id, { type: "PREVIEW_OVERLAY_TOGGLE" });
+      const [tab] = await chrome.tabs.query({ url: "${testUrl}" });
+      const res = await chrome.tabs.sendMessage(tab.id, {
+        type: "PREVIEW_OVERLAY_TOGGLE",
+        invocationId: "smoke-" + crypto.randomUUID(),
+        startedAt: Date.now(),
+      });
       return JSON.stringify(res);
     })()`;
 
@@ -382,13 +397,20 @@ async function main(): Promise<number> {
         const iframe = host && host.shadowRoot ? host.shadowRoot.querySelector("iframe") : null;
         return JSON.stringify({
           hasHost: !!host,
+          hostCount: document.querySelectorAll("#tabknight-preview-host").length,
           hasIframe: !!iframe,
           iframeSrc: iframe ? iframe.src : null,
+          frameFocused: host?.shadowRoot?.activeElement === iframe,
         });
       })()`;
 
-      let overlayState: { hasHost: boolean; hasIframe: boolean; iframeSrc: string | null } | null =
-        null;
+      let overlayState: {
+        hasHost: boolean;
+        hostCount: number;
+        hasIframe: boolean;
+        iframeSrc: string | null;
+        frameFocused: boolean;
+      } | null = null;
       for (let attempt = 0; attempt < 3; attempt++) {
         overlayState = JSON.parse(await evaluate(page, overlayCheckExpr));
         if (overlayState?.hasHost && overlayState?.hasIframe) break;
@@ -396,17 +418,37 @@ async function main(): Promise<number> {
       }
 
       if (!overlayState?.hasHost) throw new Error("overlay host element not found");
+      if (overlayState.hostCount !== 1) throw new Error(`expected one host, got ${overlayState.hostCount}`);
       if (!overlayState.hasIframe) throw new Error("overlay iframe not found in shadow root");
       if (!overlayState.iframeSrc?.startsWith("chrome-extension://")) {
         throw new Error(
           `iframe src did not start with chrome-extension://: ${overlayState.iframeSrc}`
         );
       }
+      if (!overlayState.frameFocused) throw new Error("overlay iframe did not receive focus");
 
-      results.push({ name: "overlay injects and renders on page", ok: true });
+      results.push({ name: "overlay injects once and receives focus", ok: true });
     } catch (err) {
       results.push({
-        name: "overlay injects and renders on page",
+        name: "overlay injects once and receives focus",
+        ok: false,
+        error: (err as Error).message,
+      });
+    }
+
+    /* -------------------- TEST 2: forged lifecycle ignored -------------------- */
+    try {
+      await evaluate(
+        page,
+        `window.postMessage({ source: "tabknight-preview", type: "close", invocationId: "forged" }, "*")`
+      );
+      await sleep(250);
+      const stillOpen = await evaluate(page, `!!document.getElementById("tabknight-preview-host")`);
+      if (!stillOpen) throw new Error("host page spoofed an overlay close message");
+      results.push({ name: "forged host-page lifecycle message is ignored", ok: true });
+    } catch (err) {
+      results.push({
+        name: "forged host-page lifecycle message is ignored",
         ok: false,
         error: (err as Error).message,
       });
@@ -414,6 +456,7 @@ async function main(): Promise<number> {
 
     /* -------------------- TEST 2: universal intent results -------------------- */
     try {
+      await evaluate(page, `document.title = "Example source"`);
       await evaluate(
         sw,
         `(async () => {
@@ -513,11 +556,89 @@ async function main(): Promise<number> {
       results.push({ name: "overlay closes", ok: false, error: (err as Error).message });
     }
 
+    /* -------------------- TEST 5: fallback restores origin -------------------- */
+    try {
+      const fallbackSetup = JSON.parse(
+        await evaluate(
+          sw,
+          `(async () => {
+            const [origin] = await chrome.tabs.query({ url: "${testUrl}" });
+            const contextId = "preview-smoke-" + crypto.randomUUID();
+            await chrome.storage.local.set({
+              [contextId]: {
+                returnToTabId: origin.id,
+                returnToWindowId: origin.windowId,
+                createdAt: Date.now(),
+                cause: "restricted-url",
+                elapsedMs: 12,
+              },
+            });
+            await chrome.storage.session.set({ previewSession: { mode: "tabs", selectedTabId: origin.id } });
+            const fallback = await chrome.tabs.create({
+              active: true,
+              windowId: origin.windowId,
+              index: origin.index + 1,
+              url: chrome.runtime.getURL("popup/index.html?standalone=1&context=" + contextId),
+            });
+            return JSON.stringify({ contextId, originId: origin.id });
+          })()`
+        )
+      ) as { contextId: string; originId: number };
+
+      const fallbackTarget = await waitFor(
+        async () =>
+          (await jsonList(port)).find(
+            (target) => target.type === "page" && target.url.includes(fallbackSetup.contextId)
+          ),
+        { timeoutMs: 5000, intervalMs: 200, label: "standalone fallback target" }
+      );
+      if (!fallbackTarget.webSocketDebuggerUrl) throw new Error("fallback target has no debugger URL");
+      const fallbackPage = new CDP(fallbackTarget.webSocketDebuggerUrl);
+      await fallbackPage.send("Runtime.enable");
+      await waitFor(
+        async () =>
+          evaluate(
+            fallbackPage,
+            `document.body.innerText.includes("Chrome protects this page") && document.activeElement?.tagName === "INPUT"`
+          ),
+        { timeoutMs: 5000, intervalMs: 200, label: "fallback explanation and focused search" }
+      );
+
+      await fallbackPage.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+      await fallbackPage.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+
+      await waitFor(
+        async () => !(await jsonList(port)).some((target) => target.id === fallbackTarget.id),
+        { timeoutMs: 5000, intervalMs: 200, label: "fallback tab to close on Escape" }
+      );
+      const restored = JSON.parse(
+        await evaluate(
+          sw,
+          `(async () => {
+            const origin = await chrome.tabs.get(${fallbackSetup.originId});
+            const stored = await chrome.storage.local.get("${fallbackSetup.contextId}");
+            return JSON.stringify({ active: origin.active, contextRemoved: !stored["${fallbackSetup.contextId}"] });
+          })()`
+        )
+      ) as { active: boolean; contextRemoved: boolean };
+      if (!restored.active) throw new Error("origin tab was not restored");
+      if (!restored.contextRemoved) throw new Error("standalone context was not torn down");
+      fallbackPage.close();
+      results.push({ name: "fallback explains, focuses, and Escape restores origin", ok: true });
+    } catch (err) {
+      results.push({
+        name: "fallback explains, focuses, and Escape restores origin",
+        ok: false,
+        error: (err as Error).message,
+      });
+    }
+
     sw.close();
     page.close();
   } catch (err) {
     console.error(`Smoke test setup failed: ${(err as Error).message}`);
   } finally {
+    testServer.stop(true);
     browser?.close();
     if (proc) {
       try {
@@ -542,7 +663,7 @@ async function main(): Promise<number> {
   console.log("");
   console.log(`mode: ${mode}, runtime: ${(runtimeMs / 1000).toFixed(1)}s`);
 
-  const allPassed = results.length === 4 && results.every((r) => r.ok);
+  const allPassed = results.length === 6 && results.every((r) => r.ok);
   return allPassed ? 0 : 1;
 }
 

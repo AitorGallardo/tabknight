@@ -8,6 +8,7 @@
     "build": "bun run config/build.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "test:lifecycle": "bun test tests/invocation-lifecycle.test.ts",
     "smoke": "bun scripts/smoke.ts",
     "smoke:commands": "bun scripts/browser-commands-smoke.ts",
     "package": "bun scripts/package.ts"
