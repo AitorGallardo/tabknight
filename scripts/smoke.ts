@@ -362,10 +362,23 @@ async function main(): Promise<number> {
     const page = new CDP(pageTarget.webSocketDebuggerUrl);
     await page.send("Runtime.enable");
 
+    // Mirror the production ensureAndTogglePreview path. A renderer swap can
+    // occur after the readiness probe on slower CI hosts, leaving the direct
+    // message with no receiver even though the page was ready moments ago.
     const toggleExpr = `(async () => {
       const [tab] = await chrome.tabs.query({ url: "${TEST_URL}" });
-      const res = await chrome.tabs.sendMessage(tab.id, { type: "PREVIEW_OVERLAY_TOGGLE" });
-      return JSON.stringify(res);
+      try {
+        const res = await chrome.tabs.sendMessage(tab.id, { type: "PREVIEW_OVERLAY_TOGGLE" });
+        return JSON.stringify(res);
+      } catch (error) {
+        const text = String(error).toLowerCase();
+        if (!text.includes("receiving end does not exist") && !text.includes("could not establish connection")) {
+          throw error;
+        }
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content/index.js"] });
+        const res = await chrome.tabs.sendMessage(tab.id, { type: "PREVIEW_OVERLAY_TOGGLE" });
+        return JSON.stringify(res);
+      }
     })()`;
 
     /* ------------------------- TEST 1: overlay injects ------------------------ */
