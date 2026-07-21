@@ -3,7 +3,8 @@ import { EyeOff, Keyboard, ShieldCheck, Trash2 } from "lucide-react";
 import { clearAllCards, clearAllThumbnails, countCards, countThumbnails, redactAllCardText } from "../lib/preview/db";
 import {
   DEFAULT_PREVIEW_TEXT_PREFERENCE,
-  getPreviewTextPreference,
+  ensurePreviewTextPrivacy,
+  redactAndMarkPreviewText,
   setPreviewTextPreference,
   type PreviewTextPreference,
 } from "../lib/preview/privacy";
@@ -65,14 +66,14 @@ export function OptionsView() {
       }
     })();
     void loadStats();
-    void getPreviewTextPreference().then(setTextPreference);
+    void ensurePreviewTextPrivacy(redactAllCardText).then(setTextPreference);
   }, [loadStats]);
 
   const handleTextPreference = useCallback(async (preference: PreviewTextPreference) => {
     setTextPreference(preference);
     setPrivacyStatus("Saving preview text preference");
     await setPreviewTextPreference(preference);
-    if (preference !== "always-show") await redactAllCardText();
+    if (preference !== "always-show") await redactAndMarkPreviewText(redactAllCardText);
     setPrivacyStatus(
       preference === "always-show"
         ? "Page text previews enabled"

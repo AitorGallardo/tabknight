@@ -371,13 +371,24 @@ async function main(): Promise<number> {
 
     // Seed one inactive result so compact-row and selection checks are
     // deterministic even in the clean throwaway Chrome profile.
-    await evaluate(
+    const seededTabId = await evaluate(
       sw,
       `(async () => {
         const existing = await chrome.tabs.query({ url: "https://example.org/" });
-        if (!existing.length) await chrome.tabs.create({ url: "https://example.org/", active: false });
-        return true;
+        const tab = existing[0] ?? await chrome.tabs.create({ url: "https://example.org/", active: false });
+        return tab.id;
       })()`
+    );
+    await waitFor(
+      async () =>
+        evaluate(
+          sw,
+          `(async () => {
+            const tab = await chrome.tabs.get(${seededTabId});
+            return tab.status === "complete" && tab.url === "https://example.org/";
+          })()`
+        ),
+      { timeoutMs: 10000, intervalMs: 200, label: "seeded result tab to finish loading" }
     );
 
     /* ------------------------- TEST 1: overlay injects ------------------------ */
@@ -425,16 +436,11 @@ async function main(): Promise<number> {
 
     /* ------------------ TEST 2: responsive theme/a11y matrix ----------------- */
     try {
-      const frameTarget = await waitFor(
-        async () => {
-          const list = await jsonList(port);
-          return list.find((t) => t.url.includes("/popup/index.html?overlay=1"));
-        },
-        { timeoutMs: 5000, intervalMs: 250, label: "overlay iframe target" }
-      );
-      if (!frameTarget.webSocketDebuggerUrl) throw new Error("overlay iframe target has no debugger URL");
-      const frame = new CDP(frameTarget.webSocketDebuggerUrl);
-      await frame.send("Runtime.enable");
+      const visualTarget = await jsonNew(port, `chrome-extension://${extensionId}/popup/index.html?standalone=1`);
+      if (!visualTarget.webSocketDebuggerUrl) throw new Error("visual target has no debugger URL");
+      const visual = new CDP(visualTarget.webSocketDebuggerUrl);
+      await visual.send("Runtime.enable");
+      await visual.send("Page.enable");
 
       const qaDir = process.env.TABKNIGHT_QA_DIR;
       if (qaDir) await mkdir(qaDir, { recursive: true });
@@ -444,49 +450,71 @@ async function main(): Promise<number> {
       ];
 
       for (const scenario of scenarios) {
-        await page.send("Emulation.setDeviceMetricsOverride", {
+        await visual.send("Emulation.setDeviceMetricsOverride", {
           width: scenario.width,
           height: scenario.height,
           deviceScaleFactor: 1,
           mobile: false,
         });
-        await page.send("Emulation.setEmulatedMedia", {
+        await visual.send("Emulation.setEmulatedMedia", {
           features: [{ name: "prefers-color-scheme", value: scenario.theme }],
         });
-        await sleep(150);
-        const state = JSON.parse(
-          await evaluate(
-            frame,
-            `(() => {
+        const state = await waitFor(
+          async () => {
+            const observed = JSON.parse(
+              await evaluate(
+                visual,
+                `(() => {
               const combo = document.querySelector('[role="combobox"]');
               const selected = document.querySelector('[role="option"][aria-selected="true"]');
+              const audioControl = Array.from(document.querySelectorAll('button')).find((el) => el.textContent?.includes('Audio'));
+              audioControl?.focus();
+              const nativeEnter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+              const controlsKeepNativeKeys = audioControl?.dispatchEvent(nativeEnter) ?? false;
+              combo?.focus();
               return JSON.stringify({
                 hasCombo: !!combo,
                 controls: combo?.getAttribute('aria-controls'),
                 activeDescendant: combo?.getAttribute('aria-activedescendant'),
                 sourceLabels: Array.from(document.querySelectorAll('span')).some((el) => el.textContent?.trim() === 'Tab'),
-                audioControl: document.body.textContent?.includes('Audio') ?? false,
+                audioControl: !!audioControl,
+                controlsKeepNativeKeys,
                 privacyCopy: document.body.textContent?.includes('Page text not collected') ?? false,
                 selectedBackground: selected ? getComputedStyle(selected).backgroundColor : null,
                 noHorizontalOverflow: document.documentElement.scrollWidth <= innerWidth,
                 viewport: [innerWidth, innerHeight],
               });
             })()`
-          )
+              )
+            );
+            return observed.hasCombo && observed.activeDescendant && observed.sourceLabels && observed.privacyCopy
+              ? observed
+              : null;
+          },
+          { timeoutMs: 5000, intervalMs: 100, label: `${scenario.name} populated overlay` }
         );
         if (!state.hasCombo || state.controls !== "tk-results" || !state.activeDescendant) {
           throw new Error(`${scenario.name}: combobox contract incomplete: ${JSON.stringify(state)}`);
         }
-        if (!state.sourceLabels || !state.audioControl || !state.privacyCopy || !state.noHorizontalOverflow) {
+        if (
+          !state.sourceLabels ||
+          !state.audioControl ||
+          !state.controlsKeepNativeKeys ||
+          !state.privacyCopy ||
+          !state.noHorizontalOverflow ||
+          state.viewport[0] !== scenario.width ||
+          state.viewport[1] !== scenario.height
+        ) {
           throw new Error(`${scenario.name}: visual contract incomplete: ${JSON.stringify(state)}`);
         }
         if (qaDir) {
-          const shot = await page.send("Page.captureScreenshot", { format: "png", fromSurface: true });
+          const shot = await visual.send("Page.captureScreenshot", { format: "png", fromSurface: true });
           await Bun.write(join(qaDir, `${scenario.name}.png`), Buffer.from(shot.data, "base64"));
         }
       }
-      await page.send("Emulation.clearDeviceMetricsOverride");
-      frame.close();
+      await visual.send("Emulation.clearDeviceMetricsOverride");
+      visual.close();
+      await browser?.send("Target.closeTarget", { targetId: visualTarget.id });
       results.push({ name: "light/wide and dark/narrow visual contracts", ok: true });
     } catch (err) {
       results.push({

@@ -1,4 +1,6 @@
 export const PREVIEW_TEXT_PREFERENCE_KEY = "previewTextPreference";
+export const PREVIEW_TEXT_REDACTION_VERSION_KEY = "previewTextRedactionVersion";
+const PREVIEW_TEXT_REDACTION_VERSION = 1;
 
 export type PreviewTextPreference = "sensitive" | "always-hide" | "always-show";
 
@@ -73,6 +75,36 @@ export async function getPreviewTextPreference(): Promise<PreviewTextPreference>
   }
 }
 
+export async function redactAndMarkPreviewText(redact: () => Promise<void>): Promise<void> {
+  await redact();
+  await chrome.storage.local.set({
+    [PREVIEW_TEXT_REDACTION_VERSION_KEY]: PREVIEW_TEXT_REDACTION_VERSION,
+  });
+}
+
+/**
+ * Lazily purge prose captured by older releases when a restrictive policy is
+ * first observed. The version marker keeps normal overlay opens read-only.
+ */
+export async function ensurePreviewTextPrivacy(redact: () => Promise<void>): Promise<PreviewTextPreference> {
+  const preference = await getPreviewTextPreference();
+  if (preference === "always-show") return preference;
+
+  try {
+    const stored = await chrome.storage.local.get(PREVIEW_TEXT_REDACTION_VERSION_KEY);
+    if (stored[PREVIEW_TEXT_REDACTION_VERSION_KEY] !== PREVIEW_TEXT_REDACTION_VERSION) {
+      await redactAndMarkPreviewText(redact);
+    }
+  } catch {
+    // Display still fails closed; retry the storage migration next time.
+  }
+
+  return preference;
+}
+
 export async function setPreviewTextPreference(preference: PreviewTextPreference): Promise<void> {
-  await chrome.storage.local.set({ [PREVIEW_TEXT_PREFERENCE_KEY]: preference });
+  await chrome.storage.local.set({
+    [PREVIEW_TEXT_PREFERENCE_KEY]: preference,
+    ...(preference === "always-show" ? { [PREVIEW_TEXT_REDACTION_VERSION_KEY]: 0 } : {}),
+  });
 }

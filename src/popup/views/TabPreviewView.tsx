@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode, SyntheticEvent } from "react";
 import { AppWindow, EyeOff, Moon, Music, Pause, Pin, Play, Search, Volume2, VolumeX, X } from "lucide-react";
 import { activateTab, getAllTabs, setTabMuted } from "../lib/chrome-api";
-import { getAllCards, getThumbnail } from "../lib/preview/db";
+import { getAllCards, getThumbnail, redactAllCardText } from "../lib/preview/db";
 import { hashUrl } from "../lib/preview/hash";
 import type {
   AudibleStateChangedMessage,
@@ -22,7 +22,7 @@ import { useListNavigation } from "../hooks/useListNavigation";
 import {
   DEFAULT_PREVIEW_TEXT_PREFERENCE,
   PREVIEW_TEXT_PREFERENCE_KEY,
-  getPreviewTextPreference,
+  ensurePreviewTextPrivacy,
   isPreviewTextPreference,
   shouldSuppressPreviewText,
   type PreviewTextPreference,
@@ -347,7 +347,6 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   const [revealedTextHash, setRevealedTextHash] = useState<string | null>(null);
 
   useEffect(() => {
-    void getPreviewTextPreference().then(setPreviewTextPreference);
     const onStorageChange = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
       if (areaName !== "local") return;
       const value = changes[PREVIEW_TEXT_PREFERENCE_KEY]?.newValue;
@@ -385,19 +384,22 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   useEffect(() => {
     const load = async () => {
       setLoading(true);
-      const [allTabs, currentWindow, allCards, visitCountsResult] = await Promise.all([
+      const privacyReady = ensurePreviewTextPrivacy(redactAllCardText);
+      const [allTabs, currentWindow, allCards, visitCountsResult, loadedTextPreference] = await Promise.all([
         getAllTabs(),
         chrome.windows.getCurrent(),
-        getAllCards().catch(() => [] as ContentCard[]),
+        privacyReady.then(() => getAllCards()).catch(() => [] as ContentCard[]),
         chrome.storage.session
           .get("visitCounts")
           .then((result) => (result as { visitCounts?: Record<string, number> }).visitCounts ?? {})
           .catch(() => ({}) as Record<string, number>),
+        privacyReady,
       ]);
 
       setCurrentWindowId(currentWindow.id ?? null);
       setCards(new Map(allCards.map((card) => [card.urlHash, card])));
       setVisitCounts(visitCountsResult);
+      setPreviewTextPreference(loadedTextPreference);
 
       // Hide TabKnight's own preview page and the tab the user is currently on,
       // so the previously-visited tab (sorted by lastAccessed) ranks first.
@@ -1267,14 +1269,24 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     }
   }, [query, mode, enterTabsMode, dismiss, focusInputAtEnd]);
 
-  // Tab mode-cycle, Space play/pause, ArrowLeft/Right mute, and audio-mode
-  // Backspace-to-back all live outside the generic list-navigation machinery.
+  // Search-focused audio shortcuts and audio-mode Backspace-to-back live
+  // outside the generic list-navigation machinery.
   const preKeyDown = useCallback(
     (event: KeyboardEvent): boolean => {
+      const fromSearch = event.target === inputRef.current;
+      const fromNativeControl =
+        !fromSearch &&
+        event.target instanceof HTMLElement &&
+        !!event.target.closest("button, a[href], [role='button']");
+
+      // Once Tab has moved focus to a real control, Enter and Space belong to
+      // that control. Letting the document-level list handler see them would
+      // activate the selected tab or append a space to the search instead.
+      if (fromNativeControl && (event.key === "Enter" || event.key === " ")) return true;
+
       // A held key firing repeat events would otherwise flap mode (remount
       // flicker on Tab) or race toggles (Space); consume without acting.
       if (event.repeat) return true;
-      const fromSearch = event.target === inputRef.current;
       if (mode === "audio" && fromSearch && query === "" && event.key === " ") {
         event.preventDefault();
         toggleSelectedPlay();
