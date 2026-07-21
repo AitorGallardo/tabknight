@@ -27,7 +27,6 @@ import { join } from "node:path";
 
 const REPO_ROOT = new URL("..", import.meta.url).pathname;
 const DIST_DIR = join(REPO_ROOT, "dist");
-const TEST_URL = "https://example.com/";
 
 /* --------------------------------- utils --------------------------------- */
 
@@ -216,6 +215,15 @@ async function main(): Promise<number> {
   const userDataDir = await mkdtemp(join(tmpdir(), "tabknight-smoke-"));
   const port = await findFreePort();
   const chromeBinary = findChromeBinary();
+  const testServer = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () =>
+      new Response("<!doctype html><title>TabKnight smoke page</title><main>Local test page</main>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+  });
+  const testUrl = `http://127.0.0.1:${testServer.port}/`;
 
   const baseFlags = [
     `--remote-debugging-port=${port}`,
@@ -235,7 +243,7 @@ async function main(): Promise<number> {
   const results: TestResult[] = [];
 
   function launch(headless: boolean): ReturnType<typeof Bun.spawn> {
-    const flags = headless ? [...baseFlags, "--headless=new", TEST_URL] : [...baseFlags, TEST_URL];
+    const flags = headless ? [...baseFlags, "--headless=new", testUrl] : [...baseFlags, testUrl];
     return Bun.spawn([chromeBinary, ...flags], {
       stdout: "ignore",
       stderr: "ignore",
@@ -251,15 +259,15 @@ async function main(): Promise<number> {
     );
   }
 
-  // Wait for DevTools + the example.com page target, load the extension via
+  // Wait for DevTools + the loopback page target, load the extension via
   // CDP if --load-extension was ignored, and wait for our service worker.
   async function setUp(): Promise<{ extensionId: string; swWsUrl: string }> {
     await waitFor(
       async () => {
         const list = await jsonList(port);
-        return list.find((t) => t.type === "page" && t.url.startsWith("https://example.com"));
+        return list.find((t) => t.type === "page" && t.url === testUrl);
       },
-      { timeoutMs: 8000, intervalMs: 300, label: "example.com page target in /json/list" }
+      { timeoutMs: 8000, intervalMs: 300, label: "loopback page target in /json/list" }
     );
 
     browser?.close();
@@ -325,7 +333,7 @@ async function main(): Promise<number> {
     await evaluate(
       sw,
       `(async () => {
-        const [tab] = await chrome.tabs.query({ url: "${TEST_URL}" });
+        const [tab] = await chrome.tabs.query({ url: "${testUrl}" });
         await chrome.tabs.reload(tab.id);
         return "reloaded";
       })()`
@@ -336,7 +344,7 @@ async function main(): Promise<number> {
           sw,
           `(async () => {
             try {
-              const [tab] = await chrome.tabs.query({ url: "${TEST_URL}" });
+              const [tab] = await chrome.tabs.query({ url: "${testUrl}" });
               if (!tab) return "no-tab";
               await chrome.tabs.sendMessage(tab.id, { type: "MEDIA_STATUS" });
               return "ready";
@@ -355,9 +363,9 @@ async function main(): Promise<number> {
     const pageTarget = await waitFor(
       async () => {
         const list = await jsonList(port);
-        return list.find((t) => t.type === "page" && t.url.startsWith("https://example.com"));
+        return list.find((t) => t.type === "page" && t.url === testUrl);
       },
-      { timeoutMs: 5000, intervalMs: 250, label: "example.com page target after reload" }
+      { timeoutMs: 5000, intervalMs: 250, label: "loopback page target after reload" }
     );
     if (!pageTarget.webSocketDebuggerUrl) {
       throw new Error("page target has no webSocketDebuggerUrl after reload");
@@ -366,7 +374,7 @@ async function main(): Promise<number> {
     await page.send("Runtime.enable");
 
     const toggleExpr = `(async () => {
-      const [tab] = await chrome.tabs.query({ url: "${TEST_URL}" });
+      const [tab] = await chrome.tabs.query({ url: "${testUrl}" });
       const res = await chrome.tabs.sendMessage(tab.id, {
         type: "PREVIEW_OVERLAY_TOGGLE",
         invocationId: "smoke-" + crypto.randomUUID(),
@@ -500,7 +508,7 @@ async function main(): Promise<number> {
         await evaluate(
           sw,
           `(async () => {
-            const [origin] = await chrome.tabs.query({ url: "${TEST_URL}" });
+            const [origin] = await chrome.tabs.query({ url: "${testUrl}" });
             const contextId = "preview-smoke-" + crypto.randomUUID();
             await chrome.storage.local.set({
               [contextId]: {
@@ -576,6 +584,7 @@ async function main(): Promise<number> {
   } catch (err) {
     console.error(`Smoke test setup failed: ${(err as Error).message}`);
   } finally {
+    testServer.stop(true);
     browser?.close();
     if (proc) {
       try {
