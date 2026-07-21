@@ -4,6 +4,27 @@ All notable changes to TabKnight are documented in this file.
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.29.0] - 2026-07-21
+
+### Added
+
+- Universal intent search in both the rich Cmd+K overlay and compact fallback:
+  one query now ranks open tabs, bookmarks, recent local history, direct URL
+  navigation, and an explicit web-search action.
+- Deterministic pure cross-source ranking with stable typed result identities,
+  source/action labels, URL validation, bookmark/history deduplication, and
+  focused Bun unit coverage.
+- The `history` permission, used only for bounded local lookups after at least
+  two characters are typed; results remain in memory only while the command
+  surface is open.
+
+### Changed
+
+- Async bookmark/history arrivals retain the selected result by identity, so
+  keyboard activation does not silently move to another destination.
+- Empty-query behavior remains the existing tab-only featured rail and rich
+  preview fast path.
+
 ## [0.28.0] - 2026-07-13
 
 ### Added

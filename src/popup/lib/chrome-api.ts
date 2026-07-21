@@ -16,6 +16,20 @@ export async function getAllTabs(): Promise<chrome.tabs.Tab[]> {
   return tabs.filter((tab) => tab.id !== undefined && tab.url);
 }
 
+/** Query local bookmark metadata for the universal command surface. */
+export async function searchBookmarks(query: string): Promise<chrome.bookmarks.BookmarkTreeNode[]> {
+  return chrome.bookmarks.search(query);
+}
+
+/** Query Chrome's local history index. No browsing data leaves the device. */
+export async function searchHistory(query: string): Promise<chrome.history.HistoryItem[]> {
+  return chrome.history.search({
+    text: query,
+    startTime: Date.now() - 90 * 24 * 60 * 60 * 1000,
+    maxResults: 30,
+  });
+}
+
 /**
  * Process tabs: filter system tabs, extract domains, detect duplicates
  */

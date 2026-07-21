@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode, SyntheticEvent } from "react";
-import { AppWindow, Moon, Music, Pause, Pin, Play, Search, Volume2, VolumeX, X } from "lucide-react";
-import { activateTab, getAllTabs, setTabMuted } from "../lib/chrome-api";
+import { AppWindow, Bookmark, Clock3, Globe2, Moon, Music, Pause, Pin, Play, Search, Volume2, VolumeX, X } from "lucide-react";
+import { activateTab, getAllTabs, openUrlAsTab, searchBookmarks, searchHistory, setTabMuted } from "../lib/chrome-api";
 import { getAllCards, getThumbnail } from "../lib/preview/db";
 import { hashUrl } from "../lib/preview/hash";
 import type {
@@ -17,6 +17,8 @@ import { AudioEq } from "../components/AudioEq";
 import { Favicon } from "../components/Favicon";
 import { Kbd } from "../components/Kbd";
 import { scoreTab } from "../lib/rank";
+import { rankIntentResults } from "../lib/intent-search";
+import type { IntentBookmark, IntentHistoryEntry, IntentResult } from "../lib/intent-search";
 import { useListNavigation } from "../hooks/useListNavigation";
 
 interface TabPreviewViewProps {
@@ -317,6 +319,8 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   const [activeIndex, setActiveIndex] = useState(0);
   const [currentWindowId, setCurrentWindowId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
+  const [intentBookmarks, setIntentBookmarks] = useState<IntentBookmark[]>([]);
+  const [intentHistory, setIntentHistory] = useState<IntentHistoryEntry[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   // Live clock, ticked every FRESH_TICK_MS — drives the freshness chip's
   // "just now"/"Nm ago" label and the metadata pane's "captured …" text.
@@ -329,6 +333,47 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   // Audio Playground (Cmd+K "audio" mode): tabs mode is the default, primary
   // surface; audio mode is entered via the ♪ pill or Tab key.
   const [mode, setMode] = useState<"tabs" | "audio">("tabs");
+  // Tabs render synchronously from local state. Bookmark/history sources join
+  // only after typing, and stale responses are discarded by request identity.
+  const intentRequestRef = useRef(0);
+  useEffect(() => {
+    const q = query.trim();
+    const requestId = ++intentRequestRef.current;
+    setIntentBookmarks([]);
+    setIntentHistory([]);
+    if (!q || mode !== "tabs") return;
+
+    void searchBookmarks(q)
+      .then((nodes) => {
+        if (intentRequestRef.current !== requestId) return;
+        setIntentBookmarks(
+          nodes
+            .filter((node): node is chrome.bookmarks.BookmarkTreeNode & { url: string } => !!node.url)
+            .slice(0, 30)
+            .map((node) => ({ id: node.id, title: node.title || node.url, url: node.url, dateAdded: node.dateAdded }))
+        );
+      })
+      .catch(() => {});
+
+    // Avoid broad history reads for accidental one-character input.
+    if (q.length < 2) return;
+    void searchHistory(q)
+      .then((entries) => {
+        if (intentRequestRef.current !== requestId) return;
+        setIntentHistory(
+          entries
+            .filter((entry): entry is chrome.history.HistoryItem & { url: string } => !!entry.url)
+            .map((entry) => ({
+              id: entry.id,
+              title: entry.title || entry.url,
+              url: entry.url,
+              lastVisitTime: entry.lastVisitTime,
+              visitCount: entry.visitCount,
+            }))
+        );
+      })
+      .catch(() => {});
+  }, [query, mode]);
   // Tabs-mode selection to restore when coming back from audio mode.
   const rememberedTabId = useRef<number | null>(null);
   const [announcement, setAnnouncement] = useState("");
@@ -625,6 +670,17 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     () => (featured ? [...featured.recent, ...featured.mostVisited, ...featured.remainder] : rankedTabs),
     [featured, rankedTabs]
   );
+  const intentResults = useMemo(
+    () =>
+      rankIntentResults({
+        query,
+        tabs,
+        bookmarks: intentBookmarks,
+        history: intentHistory,
+        currentWindowId,
+      }),
+    [query, tabs, intentBookmarks, intentHistory, currentWindowId]
+  );
   const featuredRecentCount = featured?.recent.length ?? 0;
   const featuredMostVisitedCount = featured?.mostVisited.length ?? 0;
 
@@ -654,10 +710,32 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     [tabs, audioTabIds, playback]
   );
 
-  // Keyboard navigation indexes into whichever list is on screen.
-  const displayList = mode === "audio" ? audioList : orderedTabs;
+  // Keyboard navigation indexes into the exact typed items on screen.
+  const displayItems = useMemo<IntentResult[]>(
+    () =>
+      mode === "audio"
+        ? audioList.map((tab) => ({
+            type: "tab",
+            key: `tab:${tab.id}`,
+            sourceLabel: "Open tab",
+            actionLabel: "Switch to tab",
+            score: 0,
+            tab,
+          }))
+        : query.trim()
+          ? intentResults
+          : orderedTabs.map((tab) => ({
+              type: "tab",
+              key: `tab:${tab.id}`,
+              sourceLabel: "Open tab",
+              actionLabel: "Switch to tab",
+              score: 0,
+              tab,
+            })),
+    [mode, audioList, query, intentResults, orderedTabs]
+  );
 
-  // Identity re-anchoring: `activeIndex` is a raw index into `displayList`,
+  // Identity re-anchoring: `activeIndex` is a raw index into `displayItems`,
   // but the list can reshuffle out from under it — e.g. a tab newly going
   // audible is inserted at the front of audioList — silently pointing the
   // index at the wrong tab (Enter would activate/toggle the wrong row).
@@ -668,12 +746,12 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   // Query changes and mode switches (Tab key / session restore) already pick
   // their own target index elsewhere — those are left alone here (skipped
   // via queryChanged/modeChanged) so this never fights that logic.
-  const selectedIdRef = useRef<number | null>(displayList[activeIndex]?.id ?? null);
-  const prevDisplayKeysRef = useRef<number[]>(displayList.map((tab) => tab.id));
+  const selectedIdRef = useRef<string | null>(displayItems[activeIndex]?.key ?? null);
+  const prevDisplayKeysRef = useRef<string[]>(displayItems.map((item) => item.key));
   const prevModeRef = useRef(mode);
   const prevQueryRef = useRef(query);
   useEffect(() => {
-    const currentKeys = displayList.map((tab) => tab.id);
+    const currentKeys = displayItems.map((item) => item.key);
     const modeChanged = prevModeRef.current !== mode;
     const queryChanged = prevQueryRef.current !== query;
     const keysChanged =
@@ -695,7 +773,8 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     if (nextIndex !== activeIndex) setActiveIndex(nextIndex);
   });
 
-  const activeTabItem = displayList[activeIndex];
+  const activeDisplayItem = displayItems[activeIndex];
+  const activeTabItem = activeDisplayItem?.type === "tab" ? activeDisplayItem.tab : undefined;
   const activeCard = activeTabItem ? cards.get(hashUrl(activeTabItem.url)) : undefined;
 
   // "Now playing" media block (audio mode only): 1Hz poll of the selected
@@ -924,14 +1003,14 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   // THUMB_PREFETCH_CONCURRENCY in-flight reads via a simple Set; skips
   // anything already cached or already being fetched.
   useEffect(() => {
-    if (displayList.length === 0) return;
+    if (displayItems.length === 0) return;
     const offsets: number[] = [];
     for (let d = 1; d <= PREFETCH_RADIUS; d++) offsets.push(-d, d);
     const queue: string[] = [];
     for (const offset of offsets) {
-      const neighbor = displayList[activeIndex + offset];
-      if (!neighbor) continue;
-      const neighborHash = hashUrl(neighbor.url);
+      const neighbor = displayItems[activeIndex + offset];
+      if (!neighbor || neighbor.type !== "tab") continue;
+      const neighborHash = hashUrl(neighbor.tab.url);
       if (thumbCacheRef.current.has(neighborHash) || thumbInFlightRef.current.has(neighborHash)) continue;
       queue.push(neighborHash);
     }
@@ -959,7 +1038,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     return () => {
       cancelled = true;
     };
-  }, [displayList, activeIndex, cacheSetThumb]);
+  }, [displayItems, activeIndex, cacheSetThumb]);
 
   // Hero box width, measured live — used to decide whether a Tier-2
   // thumbnail would need to be upscaled to fill the pane (see THUMB_UPSCALE_MAX).
@@ -1206,11 +1285,28 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     setAnnouncement("All tabs");
   }, [orderedTabs]);
 
+  const executeIntent = useCallback(
+    async (item: IntentResult | undefined) => {
+      if (!item) return;
+      if (item.type === "tab") {
+        await activate(item.tab);
+        return;
+      }
+      try {
+        await openUrlAsTab(item.url);
+        await dismiss(false);
+      } catch {
+        setAnnouncement(`Couldn't ${item.actionLabel.toLowerCase()}`);
+      }
+    },
+    [activate, dismiss]
+  );
+
   const onActivate = useCallback(
     (index: number) => {
-      void activate(displayList[index]);
+      void executeIntent(displayItems[index]);
     },
-    [displayList, activate]
+    [displayItems, executeIntent]
   );
 
   const onEscape = useCallback(() => {
@@ -1258,7 +1354,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   );
 
   const { listRef, registerItem } = useListNavigation({
-    itemCount: displayList.length,
+    itemCount: displayItems.length,
     query,
     setQuery,
     activeIndex,
@@ -1272,6 +1368,13 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   // Render the left rail with bucket headers (only when not searching).
   const showBuckets = query.trim().length === 0;
   let lastBucket = "";
+  const activeRowId = activeDisplayItem
+    ? mode === "audio" || !query.trim()
+      ? activeDisplayItem.type === "tab"
+        ? `tk-row-${activeDisplayItem.tab.id}`
+        : undefined
+      : `tk-row-${activeDisplayItem.key.replace(/[^a-z\d-]/gi, "-")}`
+    : undefined;
 
   const footer =
     mode === "audio" ? (
@@ -1295,7 +1398,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     ) : (
       <div className="flex items-center justify-end gap-4 border-t border-white/[0.07] px-6 py-3 text-[11px] text-white/50">
         <span className="flex items-center gap-1.5">
-          <Kbd>↵</Kbd> Switch to tab
+          <Kbd>↵</Kbd> {activeDisplayItem?.actionLabel ?? "Open"}
         </span>
         <span className="flex items-center gap-1.5">
           <Kbd>esc</Kbd> {query !== "" ? "Clear" : "Close"}
@@ -1327,11 +1430,11 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
             ref={inputRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search tabs…"
+            placeholder="Search tabs, bookmarks, history, or the web…"
             className="h-8 w-full border-none bg-transparent text-base font-medium tracking-[-0.01em] text-white/92 outline-none placeholder:text-white/30"
             autoComplete="off"
             spellCheck={false}
-            aria-label="Search tabs"
+            aria-label="Search tabs, bookmarks, history, or the web"
           />
           {(playingCount > 0 || mode === "audio") && (
             <button
@@ -1364,8 +1467,8 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
         <div
           ref={listRef}
           role="listbox"
-          aria-label={mode === "audio" ? "Tabs playing audio" : "Open tabs"}
-          aria-activedescendant={activeTabItem ? `tk-row-${activeTabItem.id}` : undefined}
+          aria-label={mode === "audio" ? "Tabs playing audio" : "Destinations"}
+          aria-activedescendant={activeRowId}
           className="min-h-0 flex-1 overflow-auto overscroll-contain px-2 py-2"
         >
           <div key={mode} className="tk-mode-fade space-y-0.5">
@@ -1474,13 +1577,62 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                   ))}
                 </div>
               )}
-              {!loading && orderedTabs.length === 0 && (
+              {!loading && displayItems.length === 0 && (
                 <div className="px-3 py-2 text-xs text-white/55">
-                  {query.trim() ? "No matching tabs" : "No other tabs open"}
+                  {query.trim() ? "No matching destinations" : "No other tabs open"}
                 </div>
               )}
 
-              {!loading &&
+              {!loading && query.trim() &&
+                displayItems.map((item, index) => {
+                  const active = index === activeIndex;
+                  const title = item.type === "tab" ? item.tab.title : item.title;
+                  const url = item.type === "tab" ? item.tab.url : item.url;
+                  const icon =
+                    item.type === "tab" ? (
+                      <Favicon pageUrl={item.tab.url} favIconUrl={item.tab.favIconUrl} size={24} className="h-full w-full" />
+                    ) : item.type === "bookmark" ? (
+                      <Bookmark className="h-3.5 w-3.5" />
+                    ) : item.type === "history" ? (
+                      <Clock3 className="h-3.5 w-3.5" />
+                    ) : item.type === "search" ? (
+                      <Search className="h-3.5 w-3.5" />
+                    ) : (
+                      <Globe2 className="h-3.5 w-3.5" />
+                    );
+                  return (
+                    <button
+                      key={item.key}
+                      ref={registerItem(index)}
+                      id={`tk-row-${item.key.replace(/[^a-z\d-]/gi, "-")}`}
+                      role="option"
+                      aria-selected={active}
+                      type="button"
+                      onMouseEnter={() => setActiveIndex(index)}
+                      onClick={() => void executeIntent(item)}
+                      className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${
+                        active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]"
+                      }`}
+                    >
+                      <span className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${active ? "bg-white/20" : "bg-white/[0.08]"}`}>
+                        {icon}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">
+                          {highlightTitle(title, query, active)}
+                        </span>
+                        <span className={`block truncate text-[11px] ${active ? "text-white/70" : "text-white/45"}`}>
+                          {domainOf(url)}
+                        </span>
+                      </span>
+                      <span className={`shrink-0 text-[10px] font-medium ${active ? "text-white/80" : "text-white/40"}`}>
+                        {item.sourceLabel}
+                      </span>
+                    </button>
+                  );
+                })}
+
+              {!loading && !query.trim() &&
                 orderedTabs.map((tab, index) => {
                   const inRecentSection = index < featuredRecentCount;
                   const inMostVisitedSection =
@@ -1577,9 +1729,22 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
               <div className="flex-1" />
             ) : (
               <>
-                <div className="grid flex-1 place-items-center text-sm text-white/40">
-                  {mode === "audio" && audioList.length === 0 ? "Nothing playing right now" : "Select a tab to preview"}
-                </div>
+                {activeDisplayItem && activeDisplayItem.type !== "tab" ? (
+                  <div className="grid flex-1 place-items-center px-12 text-center">
+                    <div>
+                      <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-white/[0.08] text-white/70">
+                        {activeDisplayItem.type === "bookmark" ? <Bookmark className="h-5 w-5" /> : activeDisplayItem.type === "history" ? <Clock3 className="h-5 w-5" /> : activeDisplayItem.type === "search" ? <Search className="h-5 w-5" /> : <Globe2 className="h-5 w-5" />}
+                      </div>
+                      <div className="text-lg font-semibold text-white/90">{activeDisplayItem.title}</div>
+                      <div className="mt-2 break-all text-xs leading-relaxed text-white/45">{activeDisplayItem.url}</div>
+                      <div className="mt-4 text-xs font-medium text-[#5eaeff]">{activeDisplayItem.actionLabel} · Enter</div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid flex-1 place-items-center text-sm text-white/40">
+                    {mode === "audio" && audioList.length === 0 ? "Nothing playing right now" : "Select a destination"}
+                  </div>
+                )}
                 {footer}
               </>
             )}
