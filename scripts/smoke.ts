@@ -6,8 +6,9 @@
  * DevTools Protocol (plain WebSocket + fetch, no npm deps), and asserts that:
  *
  *   1. The preview overlay (Cmd+K) injects and renders on a live page.
- *   2. The options page loads and mounts React.
- *   3. The overlay closes cleanly.
+ *   2. Universal intent search renders all available typed sources.
+ *   3. The options page loads and mounts React.
+ *   4. The overlay closes cleanly.
  *
  * Chrome >= 137 (stable) ignores --load-extension, so the extension is loaded
  * via the CDP `Extensions.loadUnpacked` command, which requires launching with
@@ -362,23 +363,10 @@ async function main(): Promise<number> {
     const page = new CDP(pageTarget.webSocketDebuggerUrl);
     await page.send("Runtime.enable");
 
-    // Mirror the production ensureAndTogglePreview path. A renderer swap can
-    // occur after the readiness probe on slower CI hosts, leaving the direct
-    // message with no receiver even though the page was ready moments ago.
     const toggleExpr = `(async () => {
       const [tab] = await chrome.tabs.query({ url: "${TEST_URL}" });
-      try {
-        const res = await chrome.tabs.sendMessage(tab.id, { type: "PREVIEW_OVERLAY_TOGGLE" });
-        return JSON.stringify(res);
-      } catch (error) {
-        const text = String(error).toLowerCase();
-        if (!text.includes("receiving end does not exist") && !text.includes("could not establish connection")) {
-          throw error;
-        }
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content/index.js"] });
-        const res = await chrome.tabs.sendMessage(tab.id, { type: "PREVIEW_OVERLAY_TOGGLE" });
-        return JSON.stringify(res);
-      }
+      const res = await chrome.tabs.sendMessage(tab.id, { type: "PREVIEW_OVERLAY_TOGGLE" });
+      return JSON.stringify(res);
     })()`;
 
     /* ------------------------- TEST 1: overlay injects ------------------------ */
@@ -424,56 +412,56 @@ async function main(): Promise<number> {
       });
     }
 
-    /* -------------------- TEST 2: command search is inert -------------------- */
+    /* -------------------- TEST 2: universal intent results -------------------- */
     try {
-      const commandUrl = `chrome-extension://${extensionId}/popup/index.html?overlay=1`;
-      const target = await jsonNew(port, commandUrl);
-      if (!target.webSocketDebuggerUrl) throw new Error("no WebSocket URL for command target");
-      const commandCdp = new CDP(target.webSocketDebuggerUrl);
-      await commandCdp.send("Runtime.enable");
-      await waitFor(
-        async () => evaluate(commandCdp, `!!document.querySelector('input[aria-label="Search tabs"]')`),
-        { timeoutMs: 4000, intervalMs: 150, label: "command search input" }
-      );
-
-      const countBefore = await evaluate(sw, `chrome.tabs.query({}).then(tabs => tabs.length)`);
       await evaluate(
-        commandCdp,
+        sw,
+        `(async () => {
+          await chrome.bookmarks.create({ title: "Example bookmark", url: "https://bookmarks.example.net/" });
+          await chrome.history.addUrl({ url: "https://history.example.org/" });
+          return true;
+        })()`
+      );
+      const intentUrl = `chrome-extension://${extensionId}/popup/index.html?overlay=1`;
+      const target = await jsonNew(port, intentUrl);
+      if (!target.webSocketDebuggerUrl) throw new Error("no webSocketDebuggerUrl for intent target");
+      const intentCdp = new CDP(target.webSocketDebuggerUrl);
+      await intentCdp.send("Runtime.enable");
+      await waitFor(
+        async () =>
+          evaluate(
+            intentCdp,
+            `document.querySelector('input[aria-label="Search tabs, bookmarks, history, or the web"]') ? true : false`
+          ),
+        { timeoutMs: 5000, intervalMs: 200, label: "universal search input" }
+      );
+      await evaluate(
+        intentCdp,
         `(() => {
-          const input = document.querySelector('input[aria-label="Search tabs"]');
+          const input = document.querySelector('input[aria-label="Search tabs, bookmarks, history, or the web"]');
           const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-          setter.call(input, "new tab");
+          setter.call(input, "example");
           input.dispatchEvent(new Event("input", { bubbles: true }));
           return true;
         })()`
       );
-      await waitFor(
-        async () =>
-          evaluate(
-            commandCdp,
-            `!!document.querySelector('[role="option"][aria-label^="New Tab."]')`
-          ),
-        { timeoutMs: 3000, intervalMs: 100, label: "New Tab command result" }
+      const labels = await waitFor(
+        async () => {
+          const value = (await evaluate(
+            intentCdp,
+            `Array.from(document.querySelectorAll('[role="option"]')).map((row) => row.textContent || "")`
+          )) as string[];
+          const expected = ["Open tab", "Bookmark", "History", "Direct URL", "Web search"];
+          return expected.every((label) => value.some((row) => row.includes(label))) ? value : false;
+        },
+        { timeoutMs: 5000, intervalMs: 200, label: "all typed universal intent sources" }
       );
-      const countAfterSearch = await evaluate(sw, `chrome.tabs.query({}).then(tabs => tabs.length)`);
-      if (countAfterSearch !== countBefore) throw new Error("searching executed a command");
-
-      await evaluate(
-        commandCdp,
-        `document.querySelector('[role="option"][aria-label^="New Tab."]').click()`
-      );
-      await waitFor(
-        async () => (await evaluate(sw, `chrome.tabs.query({}).then(tabs => tabs.length)`)) === countBefore + 1,
-        { timeoutMs: 3000, intervalMs: 100, label: "one new tab after explicit command click" }
-      );
-      results.push({ name: "command search waits for explicit activation", ok: true });
-      commandCdp.close();
+      if (labels.length < 5) throw new Error(`expected at least 5 intent rows, got ${labels.length}`);
+      results.push({ name: "universal intent sources render", ok: true });
+      intentCdp.close();
+      await browser?.send("Target.closeTarget", { targetId: target.id });
     } catch (err) {
-      results.push({
-        name: "command search waits for explicit activation",
-        ok: false,
-        error: (err as Error).message,
-      });
+      results.push({ name: "universal intent sources render", ok: false, error: (err as Error).message });
     }
 
     /* -------------------------- TEST 3: options page -------------------------- */

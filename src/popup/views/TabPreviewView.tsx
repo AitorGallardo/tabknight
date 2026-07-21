@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode, SyntheticEvent } from "react";
-import { AppWindow, Command, Moon, Music, Pause, Pin, Play, Search, Volume2, VolumeX, X } from "lucide-react";
-import { activateTab, getAllTabs, setTabMuted } from "../lib/chrome-api";
+import { AppWindow, Bookmark, Clock3, Command, Globe2, Moon, Music, Pause, Pin, Play, Search, Volume2, VolumeX, X } from "lucide-react";
+import { activateTab, getAllTabs, openUrlAsTab, searchBookmarks, searchHistory, setTabMuted } from "../lib/chrome-api";
 import { executeBrowserCommand } from "../lib/browser-command-executor";
 import { findBrowserCommands } from "../lib/browser-commands";
 import type { BrowserCommand, BrowserCommandTab } from "../lib/browser-commands";
@@ -20,6 +20,8 @@ import { AudioEq } from "../components/AudioEq";
 import { Favicon } from "../components/Favicon";
 import { Kbd } from "../components/Kbd";
 import { scoreTab } from "../lib/rank";
+import { rankIntentResults } from "../lib/intent-search";
+import type { IntentBookmark, IntentHistoryEntry, IntentResult } from "../lib/intent-search";
 import { useListNavigation } from "../hooks/useListNavigation";
 
 interface TabPreviewViewProps {
@@ -61,7 +63,7 @@ interface NavigatorTab {
 
 type PreviewResult =
   | { kind: "command"; id: string; command: BrowserCommand }
-  | { kind: "tab"; id: string; tab: NavigatorTab };
+  | { kind: "intent"; id: string; intent: IntentResult };
 
 function resultDomId(result: PreviewResult): string {
   return `tk-result-${result.id.replace(":", "-")}`;
@@ -330,6 +332,8 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   const [commandTarget, setCommandTarget] = useState<BrowserCommandTab | null>(null);
   const commandInFlightRef = useRef(false);
   const [loading, setLoading] = useState(true);
+  const [intentBookmarks, setIntentBookmarks] = useState<IntentBookmark[]>([]);
+  const [intentHistory, setIntentHistory] = useState<IntentHistoryEntry[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   // Live clock, ticked every FRESH_TICK_MS — drives the freshness chip's
   // "just now"/"Nm ago" label and the metadata pane's "captured …" text.
@@ -342,6 +346,47 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   // Audio Playground (Cmd+K "audio" mode): tabs mode is the default, primary
   // surface; audio mode is entered via the ♪ pill or Tab key.
   const [mode, setMode] = useState<"tabs" | "audio">("tabs");
+  // Tabs render synchronously from local state. Bookmark/history sources join
+  // only after typing, and stale responses are discarded by request identity.
+  const intentRequestRef = useRef(0);
+  useEffect(() => {
+    const q = query.trim();
+    const requestId = ++intentRequestRef.current;
+    setIntentBookmarks([]);
+    setIntentHistory([]);
+    if (!q || mode !== "tabs") return;
+
+    void searchBookmarks(q)
+      .then((nodes) => {
+        if (intentRequestRef.current !== requestId) return;
+        setIntentBookmarks(
+          nodes
+            .filter((node): node is chrome.bookmarks.BookmarkTreeNode & { url: string } => !!node.url)
+            .slice(0, 30)
+            .map((node) => ({ id: node.id, title: node.title || node.url, url: node.url, dateAdded: node.dateAdded }))
+        );
+      })
+      .catch(() => {});
+
+    // Avoid broad history reads for accidental one-character input.
+    if (q.length < 2) return;
+    void searchHistory(q)
+      .then((entries) => {
+        if (intentRequestRef.current !== requestId) return;
+        setIntentHistory(
+          entries
+            .filter((entry): entry is chrome.history.HistoryItem & { url: string } => !!entry.url)
+            .map((entry) => ({
+              id: entry.id,
+              title: entry.title || entry.url,
+              url: entry.url,
+              lastVisitTime: entry.lastVisitTime,
+              visitCount: entry.visitCount,
+            }))
+        );
+      })
+      .catch(() => {});
+  }, [query, mode]);
   // Tabs-mode selection to restore when coming back from audio mode.
   const rememberedTabId = useRef<number | null>(null);
   const [announcement, setAnnouncement] = useState("");
@@ -656,6 +701,17 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     () => (featured ? [...featured.recent, ...featured.mostVisited, ...featured.remainder] : rankedTabs),
     [featured, rankedTabs]
   );
+  const intentResults = useMemo(
+    () =>
+      rankIntentResults({
+        query,
+        tabs,
+        bookmarks: intentBookmarks,
+        history: intentHistory,
+        currentWindowId,
+      }),
+    [query, tabs, intentBookmarks, intentHistory, currentWindowId]
+  );
   const featuredRecentCount = featured?.recent.length ?? 0;
   const featuredMostVisitedCount = featured?.mostVisited.length ?? 0;
 
@@ -690,20 +746,38 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     [mode, query, commandTarget]
   );
 
-  // Keyboard navigation indexes one typed list so arrows and Enter preserve
-  // visual order across commands and tabs.
+  // Keyboard navigation indexes one typed list so commands and all intent
+  // sources preserve their visual order under Arrow keys and Enter.
   const displayList = useMemo<PreviewResult[]>(
-    () =>
-      mode === "audio"
-        ? audioList.map((tab) => ({ kind: "tab" as const, id: `tab:${tab.id}`, tab }))
-        : [
-            ...commandResults.map((command) => ({ kind: "command" as const, id: `command:${command.id}`, command })),
-            ...orderedTabs.map((tab) => ({ kind: "tab" as const, id: `tab:${tab.id}`, tab })),
-          ],
-    [mode, audioList, commandResults, orderedTabs]
+    () => {
+      const intents: IntentResult[] = mode === "audio"
+        ? audioList.map((tab) => ({
+            type: "tab",
+            key: `tab:${tab.id}`,
+            sourceLabel: "Open tab",
+            actionLabel: "Switch to tab",
+            score: 0,
+            tab,
+          }))
+        : query.trim()
+          ? intentResults
+          : orderedTabs.map((tab) => ({
+              type: "tab",
+              key: `tab:${tab.id}`,
+              sourceLabel: "Open tab",
+              actionLabel: "Switch to tab",
+              score: 0,
+              tab,
+            }));
+      return [
+        ...commandResults.map((command) => ({ kind: "command" as const, id: `command:${command.id}`, command })),
+        ...intents.map((intent) => ({ kind: "intent" as const, id: intent.key, intent })),
+      ];
+    },
+    [mode, audioList, query, intentResults, orderedTabs, commandResults]
   );
 
-  // Identity re-anchoring: `activeIndex` is a raw index into `displayList`,
+  // Identity re-anchoring: `activeIndex` is a raw index into `displayItems`,
   // but the list can reshuffle out from under it — e.g. a tab newly going
   // audible is inserted at the front of audioList — silently pointing the
   // index at the wrong tab (Enter would activate/toggle the wrong row).
@@ -719,7 +793,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   const prevModeRef = useRef(mode);
   const prevQueryRef = useRef(query);
   useEffect(() => {
-    const currentKeys = displayList.map((tab) => tab.id);
+    const currentKeys = displayList.map((item) => item.id);
     const modeChanged = prevModeRef.current !== mode;
     const queryChanged = prevQueryRef.current !== query;
     const keysChanged =
@@ -742,7 +816,8 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   });
 
   const activeResult = displayList[activeIndex];
-  const activeTabItem = activeResult?.kind === "tab" ? activeResult.tab : undefined;
+  const activeIntent = activeResult?.kind === "intent" ? activeResult.intent : undefined;
+  const activeTabItem = activeIntent?.type === "tab" ? activeIntent.tab : undefined;
   const activeCommand = activeResult?.kind === "command" ? activeResult.command : undefined;
   const activeCard = activeTabItem ? cards.get(hashUrl(activeTabItem.url)) : undefined;
 
@@ -978,8 +1053,8 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     const queue: string[] = [];
     for (const offset of offsets) {
       const neighbor = displayList[activeIndex + offset];
-      if (!neighbor || neighbor.kind !== "tab") continue;
-      const neighborHash = hashUrl(neighbor.tab.url);
+      if (!neighbor || neighbor.kind !== "intent" || neighbor.intent.type !== "tab") continue;
+      const neighborHash = hashUrl(neighbor.intent.tab.url);
       if (thumbCacheRef.current.has(neighborHash) || thumbInFlightRef.current.has(neighborHash)) continue;
       queue.push(neighborHash);
     }
@@ -1308,14 +1383,31 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     setAnnouncement("All tabs");
   }, [orderedTabs]);
 
+  const executeIntent = useCallback(
+    async (item: IntentResult | undefined) => {
+      if (!item) return;
+      if (item.type === "tab") {
+        await activate(item.tab);
+        return;
+      }
+      try {
+        await openUrlAsTab(item.url);
+        await dismiss(false);
+      } catch {
+        setAnnouncement(`Couldn't ${item.actionLabel.toLowerCase()}`);
+      }
+    },
+    [activate, dismiss]
+  );
+
   const onActivate = useCallback(
     (index: number) => {
       const result = displayList[index];
       if (!result) return;
       if (result.kind === "command") void runCommand(result.command);
-      else void activate(result.tab);
+      else void executeIntent(result.intent);
     },
-    [displayList, activate, runCommand]
+    [displayList, executeIntent, runCommand]
   );
 
   const onEscape = useCallback(() => {
@@ -1377,7 +1469,6 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
   // Render the left rail with bucket headers (only when not searching).
   const showBuckets = query.trim().length === 0;
   let lastBucket = "";
-
   const footer =
     mode === "audio" ? (
       <div className="flex items-center justify-end gap-4 border-t border-white/[0.07] px-6 py-3 text-[11px] text-white/50">
@@ -1400,7 +1491,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
     ) : (
       <div className="flex items-center justify-end gap-4 border-t border-white/[0.07] px-6 py-3 text-[11px] text-white/50">
         <span className="flex items-center gap-1.5">
-          <Kbd>↵</Kbd> {activeCommand ? activeCommand.actionLabel : "Switch to tab"}
+          <Kbd>↵</Kbd> {activeCommand?.actionLabel ?? activeIntent?.actionLabel ?? "Open"}
         </span>
         <span className="flex items-center gap-1.5">
           <Kbd>esc</Kbd> {query !== "" ? "Clear" : "Close"}
@@ -1432,11 +1523,11 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
             ref={inputRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search tabs…"
+            placeholder="Search tabs, bookmarks, history, or the web…"
             className="h-8 w-full border-none bg-transparent text-base font-medium tracking-[-0.01em] text-white/92 outline-none placeholder:text-white/30"
             autoComplete="off"
             spellCheck={false}
-            aria-label="Search tabs"
+            aria-label="Search tabs, bookmarks, history, or the web"
             aria-controls="tk-preview-results"
             aria-activedescendant={activeResult ? resultDomId(activeResult) : undefined}
           />
@@ -1472,7 +1563,8 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
           id="tk-preview-results"
           ref={listRef}
           role="listbox"
-          aria-label={mode === "audio" ? "Tabs playing audio" : "Tabs and browser commands"}
+          aria-label={mode === "audio" ? "Tabs playing audio" : "Destinations and browser commands"}
+          aria-activedescendant={activeResult ? resultDomId(activeResult) : undefined}
           className="min-h-0 flex-1 overflow-auto overscroll-contain px-2 py-2"
         >
           <div key={mode} className="tk-mode-fade space-y-0.5">
@@ -1498,7 +1590,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                 return (
                   <div
                     key={tab.id}
-                    id={resultDomId({ kind: "tab", id: `tab:${tab.id}`, tab })}
+                    id={resultDomId({ kind: "intent", id: `tab:${tab.id}`, intent: { type: "tab", key: `tab:${tab.id}`, sourceLabel: "Open tab", actionLabel: "Switch to tab", score: 0, tab } })}
                     role="option"
                     aria-selected={active}
                     ref={registerItem(index)}
@@ -1581,7 +1673,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                   ))}
                 </div>
               )}
-              {!loading && orderedTabs.length === 0 && commandResults.length === 0 && (
+              {!loading && displayList.length === 0 && (
                 <div className="px-3 py-2 text-xs text-white/55">
                   {query.trim() ? "No matching tabs or commands" : "No other tabs open"}
                 </div>
@@ -1623,8 +1715,57 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                   </button>
                 );
               })}
+              {!loading && query.trim() &&
+                intentResults.map((item, index) => {
+                  const resultIndex = commandResults.length + index;
+                  const active = resultIndex === activeIndex;
+                  const title = item.type === "tab" ? item.tab.title : item.title;
+                  const url = item.type === "tab" ? item.tab.url : item.url;
+                  const icon =
+                    item.type === "tab" ? (
+                      <Favicon pageUrl={item.tab.url} favIconUrl={item.tab.favIconUrl} size={24} className="h-full w-full" />
+                    ) : item.type === "bookmark" ? (
+                      <Bookmark className="h-3.5 w-3.5" />
+                    ) : item.type === "history" ? (
+                      <Clock3 className="h-3.5 w-3.5" />
+                    ) : item.type === "search" ? (
+                      <Search className="h-3.5 w-3.5" />
+                    ) : (
+                      <Globe2 className="h-3.5 w-3.5" />
+                    );
+                  return (
+                    <button
+                      key={item.key}
+                      ref={registerItem(resultIndex)}
+                      id={resultDomId({ kind: "intent", id: item.key, intent: item })}
+                      role="option"
+                      aria-selected={active}
+                      type="button"
+                      onMouseEnter={() => setActiveIndex(resultIndex)}
+                      onClick={() => void executeIntent(item)}
+                      className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${
+                        active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]"
+                      }`}
+                    >
+                      <span className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${active ? "bg-white/20" : "bg-white/[0.08]"}`}>
+                        {icon}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">
+                          {highlightTitle(title, query, active)}
+                        </span>
+                        <span className={`block truncate text-[11px] ${active ? "text-white/70" : "text-white/45"}`}>
+                          {domainOf(url)}
+                        </span>
+                      </span>
+                      <span className={`shrink-0 text-[10px] font-medium ${active ? "text-white/80" : "text-white/40"}`}>
+                        {item.sourceLabel}
+                      </span>
+                    </button>
+                  );
+                })}
 
-              {!loading &&
+              {!loading && !query.trim() &&
                 orderedTabs.map((tab, index) => {
                   const resultIndex = commandResults.length + index;
                   const inRecentSection = index < featuredRecentCount;
@@ -1660,7 +1801,7 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
                       )}
                       <button
                         ref={registerItem(resultIndex)}
-                        id={resultDomId({ kind: "tab", id: `tab:${tab.id}`, tab })}
+                        id={resultDomId({ kind: "intent", id: `tab:${tab.id}`, intent: { type: "tab", key: `tab:${tab.id}`, sourceLabel: "Open tab", actionLabel: "Switch to tab", score: 0, tab } })}
                         role="option"
                         aria-selected={active}
                         type="button"
@@ -1738,9 +1879,22 @@ export function TabPreviewView({ returnToTabId = null, overlay = false }: TabPre
               <div className="flex-1" />
             ) : (
               <>
-                <div className="grid flex-1 place-items-center text-sm text-white/40">
-                  {mode === "audio" && audioList.length === 0 ? "Nothing playing right now" : "Select a tab to preview"}
-                </div>
+                {activeIntent && activeIntent.type !== "tab" ? (
+                  <div className="grid flex-1 place-items-center px-12 text-center">
+                    <div>
+                      <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-white/[0.08] text-white/70">
+                        {activeIntent.type === "bookmark" ? <Bookmark className="h-5 w-5" /> : activeIntent.type === "history" ? <Clock3 className="h-5 w-5" /> : activeIntent.type === "search" ? <Search className="h-5 w-5" /> : <Globe2 className="h-5 w-5" />}
+                      </div>
+                      <div className="text-lg font-semibold text-white/90">{activeIntent.title}</div>
+                      <div className="mt-2 break-all text-xs leading-relaxed text-white/45">{activeIntent.url}</div>
+                      <div className="mt-4 text-xs font-medium text-[#5eaeff]">{activeIntent.actionLabel} · Enter</div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid flex-1 place-items-center text-sm text-white/40">
+                    {mode === "audio" && audioList.length === 0 ? "Nothing playing right now" : "Select a destination"}
+                  </div>
+                )}
                 {footer}
               </>
             )}
