@@ -1,6 +1,6 @@
 {
   "name": "tabknight",
-  "version": "0.28.0",
+  "version": "0.29.0",
   "description": "Chrome extension to save open tabs as bookmarks",
   "type": "module",
   "scripts": {
@@ -8,6 +8,7 @@
     "build": "bun run config/build.ts",
     "typecheck": "tsc --noEmit",
     "smoke": "bun scripts/smoke.ts",
+    "smoke:commands": "bun scripts/browser-commands-smoke.ts",
     "package": "bun scripts/package.ts"
   },
   "dependencies": {

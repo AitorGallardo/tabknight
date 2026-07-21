@@ -411,7 +411,59 @@ async function main(): Promise<number> {
       });
     }
 
-    /* -------------------------- TEST 2: options page -------------------------- */
+    /* -------------------- TEST 2: command search is inert -------------------- */
+    try {
+      const commandUrl = `chrome-extension://${extensionId}/popup/index.html?overlay=1`;
+      const target = await jsonNew(port, commandUrl);
+      if (!target.webSocketDebuggerUrl) throw new Error("no WebSocket URL for command target");
+      const commandCdp = new CDP(target.webSocketDebuggerUrl);
+      await commandCdp.send("Runtime.enable");
+      await waitFor(
+        async () => evaluate(commandCdp, `!!document.querySelector('input[aria-label="Search tabs"]')`),
+        { timeoutMs: 4000, intervalMs: 150, label: "command search input" }
+      );
+
+      const countBefore = await evaluate(sw, `chrome.tabs.query({}).then(tabs => tabs.length)`);
+      await evaluate(
+        commandCdp,
+        `(() => {
+          const input = document.querySelector('input[aria-label="Search tabs"]');
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+          setter.call(input, "new tab");
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          return true;
+        })()`
+      );
+      await waitFor(
+        async () =>
+          evaluate(
+            commandCdp,
+            `!!document.querySelector('[role="option"][aria-label^="New Tab."]')`
+          ),
+        { timeoutMs: 3000, intervalMs: 100, label: "New Tab command result" }
+      );
+      const countAfterSearch = await evaluate(sw, `chrome.tabs.query({}).then(tabs => tabs.length)`);
+      if (countAfterSearch !== countBefore) throw new Error("searching executed a command");
+
+      await evaluate(
+        commandCdp,
+        `document.querySelector('[role="option"][aria-label^="New Tab."]').click()`
+      );
+      await waitFor(
+        async () => (await evaluate(sw, `chrome.tabs.query({}).then(tabs => tabs.length)`)) === countBefore + 1,
+        { timeoutMs: 3000, intervalMs: 100, label: "one new tab after explicit command click" }
+      );
+      results.push({ name: "command search waits for explicit activation", ok: true });
+      commandCdp.close();
+    } catch (err) {
+      results.push({
+        name: "command search waits for explicit activation",
+        ok: false,
+        error: (err as Error).message,
+      });
+    }
+
+    /* -------------------------- TEST 3: options page -------------------------- */
     try {
       const optionsUrl = `chrome-extension://${extensionId}/popup/options.html`;
       const target = await jsonNew(port, optionsUrl);
@@ -437,7 +489,7 @@ async function main(): Promise<number> {
       });
     }
 
-    /* ------------------------- TEST 3: overlay closes ------------------------- */
+    /* ------------------------- TEST 4: overlay closes ------------------------- */
     try {
       const toggleRes = await evaluate(sw, toggleExpr);
       const parsed = JSON.parse(toggleRes);
@@ -489,7 +541,7 @@ async function main(): Promise<number> {
   console.log("");
   console.log(`mode: ${mode}, runtime: ${(runtimeMs / 1000).toFixed(1)}s`);
 
-  const allPassed = results.length === 3 && results.every((r) => r.ok);
+  const allPassed = results.length === 4 && results.every((r) => r.ok);
   return allPassed ? 0 : 1;
 }
 
