@@ -22,7 +22,10 @@ describe("invocation lifecycle policy", () => {
       "discarded-tab"
     );
     expect(initialFallbackCause({ url: "chrome://settings" })).toBe("restricted-url");
-    expect(initialFallbackCause({ pendingUrl: "https://example.com", status: "loading" })).toBeUndefined();
+    expect(initialFallbackCause({ pendingUrl: "https://example.com", status: "loading" })).toBe(
+      "loading-tab"
+    );
+    expect(initialFallbackCause({ url: "https://example.com", status: "complete" })).toBeUndefined();
   });
 
   test("diagnostics retain only bounded, privacy-safe lifecycle fields", () => {

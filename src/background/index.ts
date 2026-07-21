@@ -310,11 +310,9 @@ async function openStandalonePreview(
 
   const windowId = sourceTab?.windowId ?? invocation.windowId;
   const existing = await findStandaloneTab(windowId);
-  if (existing?.id !== undefined) {
-    await chrome.windows.update(windowId, { focused: true });
-    await chrome.tabs.update(existing.id, { active: true });
-    return;
-  }
+  const previousContextId = existing?.url
+    ? new URL(existing.url).searchParams.get("context")
+    : null;
 
   const contextId = `${STANDALONE_CONTEXT_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   let backgroundImage: string | undefined;
@@ -346,12 +344,19 @@ async function openStandalonePreview(
 
   const params = new URLSearchParams({ standalone: "1", context: contextId });
 
-  const standalone = await chrome.tabs.create({
-    url: chrome.runtime.getURL(`popup/index.html?${params.toString()}`),
-    active: true,
-    ...(sourceTab?.windowId !== undefined ? { windowId: sourceTab.windowId } : {}),
-    ...(typeof sourceTab?.index === "number" ? { index: sourceTab.index + 1 } : {}),
-  });
+  const fallbackUrl = chrome.runtime.getURL(`popup/index.html?${params.toString()}`);
+  const standalone = existing?.id !== undefined
+    ? await chrome.tabs.update(existing.id, {
+        active: true,
+        url: fallbackUrl,
+      })
+    : await chrome.tabs.create({
+        url: fallbackUrl,
+        active: true,
+        ...(sourceTab?.windowId !== undefined ? { windowId: sourceTab.windowId } : {}),
+        ...(typeof sourceTab?.index === "number" ? { index: sourceTab.index + 1 } : {}),
+      });
+  await chrome.windows.update(windowId, { focused: true });
   if (standalone.id !== undefined) {
     standaloneContextsByTab.set(standalone.id, contextId);
     await chrome.storage.local.set({
@@ -360,6 +365,12 @@ async function openStandalonePreview(
         standaloneTabId: standalone.id,
       },
     });
+  }
+  if (
+    previousContextId?.startsWith(STANDALONE_CONTEXT_PREFIX) &&
+    previousContextId !== contextId
+  ) {
+    await chrome.storage.local.remove(previousContextId);
   }
   await recordInvocationDiagnostic(invocation, "fallback", cause);
 }

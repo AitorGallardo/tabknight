@@ -37,6 +37,10 @@ export function initialFallbackCause(tab: {
 }): FallbackCause | undefined {
   if (tab.discarded) return "discarded-tab";
   if (!isInjectablePage(tab.pendingUrl ?? tab.url)) return "restricted-url";
+  // A host injected into an outgoing loading document can acknowledge and
+  // disappear as navigation commits. Use the explicit fallback until Chrome
+  // has a stable document rather than reporting a surface that did not last.
+  if (tab.status === "loading") return "loading-tab";
   return undefined;
 }
 

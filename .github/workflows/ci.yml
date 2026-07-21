@@ -17,6 +17,8 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Typecheck
         run: bun run typecheck
+      - name: Test invocation lifecycle
+        run: bun run test:lifecycle
       - name: Build
         run: bun run build
 
