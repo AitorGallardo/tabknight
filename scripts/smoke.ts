@@ -7,12 +7,13 @@
  *
  *   1. The preview overlay injects exactly once and focuses its frame.
  *   2. Responsive light/dark, wide/narrow, and accessibility contracts hold.
- *   3. Host-page spoofed lifecycle messages are ignored.
- *   4. Popup and standalone sizing stay within their viewports.
- *   5. Universal intent search renders all available typed sources.
- *   6. The privacy options page loads with rich page text enabled by default.
- *   7. The overlay closes cleanly.
- *   8. A restricted-page fallback explains itself, focuses search, and Escape
+ *   3. Palette starts at the newest tab and Alt/Option+W closes that selection.
+ *   4. Host-page spoofed lifecycle messages are ignored.
+ *   5. Popup and standalone sizing stay within their viewports.
+ *   6. Universal intent search renders all available typed sources.
+ *   7. The privacy options page loads with rich page text enabled by default.
+ *   8. The overlay closes cleanly.
+ *   9. A restricted-page fallback explains itself, focuses search, and Escape
  *      closes it while restoring the origin tab.
  *
  * Chrome >= 137 (stable) ignores --load-extension, so the extension is loaded
@@ -551,6 +552,94 @@ async function main(): Promise<number> {
       });
     }
 
+    /* ------------- TEST 3: fresh top selection + shortcut target ------------ */
+    try {
+      const shortcutTargetId = await evaluate(
+        sw,
+        `(async () => {
+          const tab = await chrome.tabs.create({ url: "https://example.net/", active: true });
+          await chrome.storage.session.set({ previewSession: { mode: "audio", selectedTabId: ${seededTabId} } });
+          return tab.id;
+        })()`
+      );
+      await waitFor(
+        async () =>
+          evaluate(
+            sw,
+            `(async () => {
+              const tab = await chrome.tabs.get(${shortcutTargetId});
+              return tab.status === "complete";
+            })()`
+          ),
+        { timeoutMs: 10000, intervalMs: 200, label: "shortcut target to finish loading" }
+      );
+
+      const shortcutTarget = await jsonNew(port, `chrome-extension://${extensionId}/popup/index.html?standalone=1`);
+      if (!shortcutTarget.webSocketDebuggerUrl) throw new Error("shortcut target has no debugger URL");
+      const shortcutCdp = new CDP(shortcutTarget.webSocketDebuggerUrl);
+      await shortcutCdp.send("Runtime.enable");
+      const initialState = await waitFor(
+        async () => {
+          const state = JSON.parse(
+            await evaluate(
+              shortcutCdp,
+              `(() => {
+                const input = document.querySelector('[role="combobox"]');
+                const selected = document.querySelector('[role="option"][aria-selected="true"]');
+                const list = document.getElementById('tk-results');
+                input?.focus();
+                return JSON.stringify({
+                  selectedId: selected?.id ?? null,
+                  scrollTop: list?.scrollTop ?? null,
+                  focused: document.activeElement === input,
+                });
+              })()`
+            )
+          );
+          return state.selectedId ? state : null;
+        },
+        { timeoutMs: 5000, intervalMs: 100, label: "fresh palette selection" }
+      );
+      if (initialState.selectedId !== `tk-result-tab-${shortcutTargetId}`) {
+        throw new Error(`expected newest tab ${shortcutTargetId}, got ${initialState.selectedId}`);
+      }
+      if (initialState.scrollTop !== 0 || !initialState.focused) {
+        throw new Error(`palette did not start at top and focused: ${JSON.stringify(initialState)}`);
+      }
+
+      await shortcutCdp.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key: "w",
+        code: "KeyW",
+        modifiers: 1,
+      });
+      await shortcutCdp.send("Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: "w",
+        code: "KeyW",
+        modifiers: 1,
+      });
+      await waitFor(
+        async () =>
+          evaluate(
+            sw,
+            `(async () => {
+              try { await chrome.tabs.get(${shortcutTargetId}); return false; }
+              catch { return true; }
+            })()`
+          ),
+        { timeoutMs: 3000, intervalMs: 100, label: "Alt+W to close highlighted tab" }
+      );
+      shortcutCdp.close();
+      results.push({ name: "fresh palette selects newest tab and Alt+W closes it", ok: true });
+    } catch (err) {
+      results.push({
+        name: "fresh palette selects newest tab and Alt+W closes it",
+        ok: false,
+        error: (err as Error).message,
+      });
+    }
+
     /* -------------------- TEST 2: forged lifecycle ignored -------------------- */
     try {
       await evaluate(
@@ -817,7 +906,7 @@ async function main(): Promise<number> {
   console.log("");
   console.log(`mode: ${mode}, runtime: ${(runtimeMs / 1000).toFixed(1)}s`);
 
-  const allPassed = results.length === 8 && results.every((r) => r.ok);
+  const allPassed = results.length === 9 && results.every((r) => r.ok);
   return allPassed ? 0 : 1;
 }
 

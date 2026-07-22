@@ -4,6 +4,18 @@ All notable changes to TabKnight are documented in this file.
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.30.1] - 2026-07-22
+
+### Fixed
+
+- Option/Alt quick-action shortcuts now reach the palette handler instead of
+  being discarded by shared keyboard navigation.
+- Close, duplicate, pin, mute, and reload now target the highlighted tab
+  rather than the tab behind TabKnight.
+- Every new palette opening starts at the top with the most recently visited
+  eligible tab selected; old palette selection and scroll position are no
+  longer restored.
+
 ## [0.30.0] - 2026-07-22
 
 ### Added

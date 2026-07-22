@@ -87,8 +87,8 @@ export function useListNavigation({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (preKeyDown?.(event)) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
 
       const target = event.target as HTMLElement | null;
       const targetIsInput =

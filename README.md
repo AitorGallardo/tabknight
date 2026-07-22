@@ -12,7 +12,7 @@
 [![React 18](https://img.shields.io/badge/React_18-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.30.0-6366f1?style=for-the-badge)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.30.1-6366f1?style=for-the-badge)](./CHANGELOG.md)
 
 </div>
 
@@ -51,11 +51,11 @@ TabKnight is keyboard-first by design — you rarely need the mouse.
 | `Tab` | Move focus through Search, Audio, Close, and row controls |
 | `Esc` | Staged close — clears the query, then steps back from Audio mode, then closes |
 | `>` | Show all browser commands; keep typing to filter them |
-| `⌥ W` · `Alt W` | Close the current tab |
-| `⌥ D` · `Alt D` | Duplicate the current tab |
-| `⌥ P` · `Alt P` | Pin/unpin the current tab |
-| `⌥ M` · `Alt M` | Mute/unmute the current tab |
-| `⌥ R` · `Alt R` | Reload the current tab |
+| `⌥ W` · `Alt W` | Close the highlighted tab |
+| `⌥ D` · `Alt D` | Duplicate the highlighted tab |
+| `⌥ P` · `Alt P` | Pin/unpin the highlighted tab |
+| `⌥ M` · `Alt M` | Mute/unmute the highlighted tab |
+| `⌥ R` · `Alt R` | Reload the highlighted tab |
 | `⌥ N` · `Alt N` | Open a new tab |
 | _type…_ | Filter instantly — the search stays focused even if focus drifts |
 | `Backspace` | Edit the query without clicking back into the input |

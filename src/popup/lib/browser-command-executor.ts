@@ -30,7 +30,7 @@ export async function executeBrowserCommand(
   api: BrowserCommandApi
 ): Promise<BrowserCommandExecution> {
   if (TARGET_REQUIRED.has(commandId) && !targetTab) {
-    throw new Error("The current tab is no longer available");
+    throw new Error("The selected tab is no longer available");
   }
   if (!isBrowserCommandAvailable(commandId, { targetTab })) {
     throw new Error("That command is no longer available");

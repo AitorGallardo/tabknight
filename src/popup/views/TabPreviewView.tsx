@@ -50,13 +50,6 @@ function postToParent(type: "ready" | "close", invocationId?: string | null): vo
   }
 }
 
-interface PreviewSessionState {
-  mode: "tabs" | "audio";
-  selectedTabId: number | null;
-}
-
-const PREVIEW_SESSION_KEY = "previewSession";
-
 interface NavigatorTab {
   id: number;
   windowId: number;
@@ -70,6 +63,15 @@ interface NavigatorTab {
   audible?: boolean;
   muted?: boolean;
   discarded?: boolean;
+}
+
+function commandTargetForTab(tab: NavigatorTab): BrowserCommandTab {
+  return {
+    id: tab.id,
+    title: tab.title,
+    pinned: tab.pinned,
+    muted: tab.muted,
+  };
 }
 
 type PreviewResult =
@@ -443,16 +445,6 @@ export function TabPreviewView({
   const [rowHints, setRowHints] = useState<Record<number, string>>({});
   const pauseTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
   const hintTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
-  // Session-restored { mode, selectedTabId } read once on mount; applied after
-  // tabs finish loading. undefined = read still pending, null = nothing saved.
-  // Kept as state (not a ref) so the restore effect re-runs if the async read
-  // resolves after tabs have already loaded.
-  const [savedSession, setSavedSession] = useState<PreviewSessionState | null | undefined>(undefined);
-  const restoredSelectionRef = useRef(false);
-  // Gates the write-through effect until the one-time restore has applied, so
-  // it can't persist a stale pre-restore selection in the same commit.
-  const [persistReady, setPersistReady] = useState(false);
-
   useEffect(() => {
     const load = async () => {
       setLoading(true);
@@ -526,20 +518,6 @@ export function TabPreviewView({
 
     void load();
   }, [returnToTabId]);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const result = await chrome.storage.session.get(PREVIEW_SESSION_KEY);
-        const saved = (result[PREVIEW_SESSION_KEY] as PreviewSessionState | undefined) ?? null;
-        setSavedSession(saved);
-        if (saved?.mode === "audio") setMode("audio");
-      } catch {
-        // No session storage access — start fresh.
-        setSavedSession(null);
-      }
-    })();
-  }, []);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -787,18 +765,6 @@ export function TabPreviewView({
     [mode, query, commandTarget]
   );
   const commandMode = mode === "tabs" && query.trimStart().startsWith(">");
-  const availableCommands = useMemo(
-    () => (mode === "tabs" ? listBrowserCommands({ targetTab: commandTarget }) : []),
-    [mode, commandTarget]
-  );
-  const quickActions = useMemo(
-    () =>
-      availableCommands.filter(({ id }) =>
-        ["close-tab", "duplicate-tab", "pin-tab", "unpin-tab", "mute-tab", "unmute-tab"].includes(id)
-      ),
-    [availableCommands]
-  );
-
   // Keyboard navigation indexes one typed list so commands and all intent
   // sources preserve their visual order under Arrow keys and Enter.
   const displayList = useMemo<PreviewResult[]>(
@@ -840,7 +806,7 @@ export function TabPreviewView({
   // this runs after every render (no dep array, same idiom as
   // useRovingCursor's prevKeysRef) so it both re-anchors on a pure identity
   // shift and stays synced when the index moves for any other reason.
-  // Query changes and mode switches (Tab key / session restore) already pick
+  // Query changes and mode switches (Tab key) already pick
   // their own target index elsewhere — those are left alone here (skipped
   // via queryChanged/modeChanged) so this never fights that logic.
   const selectedIdRef = useRef<string | null>(displayList[activeIndex]?.id ?? null);
@@ -874,6 +840,30 @@ export function TabPreviewView({
   const activeIntent = activeResult?.kind === "intent" ? activeResult.intent : undefined;
   const activeTabItem = activeIntent?.type === "tab" ? activeIntent.tab : undefined;
   const activeCommand = activeResult?.kind === "command" ? activeResult.command : undefined;
+  // Quick actions always operate on the highlighted tab. When command search
+  // temporarily replaces tab rows, retain the last highlighted tab as the
+  // command target instead of silently falling back to the page underneath.
+  const selectedCommandTarget = activeTabItem ? commandTargetForTab(activeTabItem) : commandTarget;
+  useEffect(() => {
+    if (mode !== "tabs" || !activeTabItem) return;
+    const next = commandTargetForTab(activeTabItem);
+    setCommandTarget((current) =>
+      current?.id === next.id && current.pinned === next.pinned && current.muted === next.muted
+        ? current
+        : next
+    );
+  }, [mode, activeTabItem?.id, activeTabItem?.pinned, activeTabItem?.muted]);
+  const availableCommands = useMemo(
+    () => (mode === "tabs" ? listBrowserCommands({ targetTab: selectedCommandTarget }) : []),
+    [mode, selectedCommandTarget]
+  );
+  const quickActions = useMemo(
+    () =>
+      availableCommands.filter(({ id }) =>
+        ["close-tab", "duplicate-tab", "pin-tab", "unpin-tab", "mute-tab", "unmute-tab"].includes(id)
+      ),
+    [availableCommands]
+  );
   const activeCard = activeTabItem ? cards.get(hashUrl(activeTabItem.url)) : undefined;
   const activeCardHash = activeTabItem ? hashUrl(activeTabItem.url) : null;
   const previewTextSuppressed = !!activeTabItem && shouldSuppressPreviewText(activeTabItem.url, previewTextPreference);
@@ -945,49 +935,6 @@ export function TabPreviewView({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeAudioTab?.id, activeAudioKnownEmpty]);
-
-  // One-time restore of the remembered selection once tabs are loaded. Falls
-  // back "audio" -> "tabs" if the restored audio list would be empty, and
-  // falls back to the existing default ranking if the remembered tab is gone.
-  useEffect(() => {
-    if (loading || savedSession === undefined || restoredSelectionRef.current) return;
-    restoredSelectionRef.current = true;
-    const saved = savedSession;
-    if (!saved) {
-      setPersistReady(true);
-      return;
-    }
-
-    let effectiveMode = saved.mode;
-    if (effectiveMode === "audio" && !tabs.some((tab) => tab.audible || tab.muted)) {
-      effectiveMode = "tabs";
-      setMode("tabs");
-    }
-
-    if (saved.selectedTabId !== null) {
-      if (effectiveMode === "audio") {
-        const list = tabs
-          .filter((tab) => tab.audible || tab.muted)
-          .sort((a, b) => b.lastAccessed - a.lastAccessed);
-        const idx = list.findIndex((tab) => tab.id === saved.selectedTabId);
-        if (idx >= 0) setActiveIndex(idx);
-      } else {
-        const idx = orderedTabs.findIndex((tab) => tab.id === saved.selectedTabId);
-        if (idx >= 0) setActiveIndex(idx);
-      }
-    }
-    setPersistReady(true);
-  }, [loading, tabs, orderedTabs, savedSession]);
-
-  // Write-through: persist { mode, selectedTabId } so the next Cmd+K open
-  // (fresh iframe) can restore where the user left off. Gated until the
-  // one-time restore above has applied, so it never overwrites the saved
-  // session with a stale pre-restore selection.
-  useEffect(() => {
-    if (loading || !persistReady) return;
-    const selectedTabId = activeTabItem?.id ?? null;
-    chrome.storage.session.set({ [PREVIEW_SESSION_KEY]: { mode, selectedTabId } }).catch(() => {});
-  }, [mode, activeTabItem?.id, loading, persistReady]);
 
   // Lazily load the pixel thumbnail for the focused tab (Tier 2). Debounced by
   // a dwell period so arrow-key mashing doesn't fire an IndexedDB read per
@@ -1334,19 +1281,19 @@ export function TabPreviewView({
   );
 
   const runCommand = useCallback(
-    async (command: BrowserCommand) => {
+    async (command: BrowserCommand, targetOverride?: BrowserCommandTab | null) => {
       if (commandInFlightRef.current) return;
       commandInFlightRef.current = true;
       try {
-        let freshTarget = commandTarget;
+        let freshTarget = targetOverride ?? commandTarget;
         if (command.id !== "new-tab") {
-          if (!freshTarget) throw new Error("The current tab is no longer available");
+          if (!freshTarget) throw new Error("The selected tab is no longer available");
           let tab: chrome.tabs.Tab;
           try {
             tab = await chrome.tabs.get(freshTarget.id);
           } catch {
             setCommandTarget(null);
-            throw new Error("The current tab is no longer available");
+            throw new Error("The selected tab is no longer available");
           }
           freshTarget = {
             id: tab.id!,
@@ -1366,11 +1313,16 @@ export function TabPreviewView({
         });
 
         setAnnouncement(result.announcement);
+        const executedTargetId = freshTarget?.id;
         if (command.id === "pin-tab" || command.id === "unpin-tab") {
-          setCommandTarget((current) => (current ? { ...current, pinned: command.id === "pin-tab" } : current));
+          setCommandTarget((current) =>
+            current && current.id === executedTargetId ? { ...current, pinned: command.id === "pin-tab" } : current
+          );
         } else if (command.id === "mute-tab" || command.id === "unmute-tab") {
           const muted = command.id === "mute-tab";
-          setCommandTarget((current) => (current ? { ...current, muted } : current));
+          setCommandTarget((current) =>
+            current && current.id === executedTargetId ? { ...current, muted } : current
+          );
           setTabs((current) => current.map((tab) => (tab.id === freshTarget?.id ? { ...tab, muted } : tab)));
         } else {
           await dismiss(false);
@@ -1518,16 +1470,16 @@ export function TabPreviewView({
       if (mode === "tabs" && fromSearch && event.altKey && !event.metaKey && !event.ctrlKey) {
         const commandId =
           event.code === "KeyP"
-            ? commandTarget?.pinned ? "unpin-tab" : "pin-tab"
+            ? selectedCommandTarget?.pinned ? "unpin-tab" : "pin-tab"
             : event.code === "KeyM"
-              ? commandTarget?.muted ? "unmute-tab" : "mute-tab"
+              ? selectedCommandTarget?.muted ? "unmute-tab" : "mute-tab"
               : QUICK_ACTION_CODE_TO_COMMAND[event.code];
         const command = commandId
-          ? getBrowserCommand(commandId, { targetTab: commandTarget })
+          ? getBrowserCommand(commandId, { targetTab: selectedCommandTarget })
           : undefined;
         if (command) {
           event.preventDefault();
-          void runCommand(command);
+          void runCommand(command, selectedCommandTarget);
           return true;
         }
       }
@@ -1548,7 +1500,7 @@ export function TabPreviewView({
       }
       return false;
     },
-    [mode, query, commandTarget, runCommand, enterAudioMode, enterTabsMode, toggleSelectedPlay, toggleSelectedMute]
+    [mode, query, selectedCommandTarget, runCommand, enterAudioMode, enterTabsMode, toggleSelectedPlay, toggleSelectedMute]
   );
 
   const { listRef, registerItem } = useListNavigation({
@@ -1562,6 +1514,17 @@ export function TabPreviewView({
     onEscape,
     preKeyDown,
   });
+
+  // A palette open is a new navigation session: row one is the most recently
+  // visited eligible tab and the rail must never inherit an old scroll offset.
+  const initialPositionResetRef = useRef(false);
+  useEffect(() => {
+    if (loading || initialPositionResetRef.current) return;
+    initialPositionResetRef.current = true;
+    setActiveIndex(0);
+    selectedIdRef.current = displayList[0]?.id ?? null;
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }, [loading, displayList, listRef]);
 
   // Render the left rail with bucket headers (only when not searching).
   const showBuckets = query.trim().length === 0;
@@ -1664,7 +1627,7 @@ export function TabPreviewView({
               <button
                 key={command.id}
                 type="button"
-                onClick={() => void runCommand(command)}
+                onClick={() => void runCommand(command, selectedCommandTarget)}
                 className="flex shrink-0 items-center gap-1 rounded-md border border-black/10 bg-black/[0.035] px-1.5 py-1 text-black/65 transition-colors hover:bg-black/[0.08] focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/50 dark:border-white/10 dark:bg-white/[0.035] dark:text-white/65 dark:hover:bg-white/[0.08]"
                 aria-label={`${command.actionLabel}. Shortcut ${command.shortcut}`}
               >
@@ -1992,8 +1955,8 @@ export function TabPreviewView({
                 </span>
                 <h2 className="mt-4 text-xl font-semibold tracking-[-0.02em] text-white/95">{activeCommand.label}</h2>
                 <p className="mt-2 text-[13px] leading-relaxed text-white/50">{activeCommand.description}</p>
-                {commandTarget && activeCommand.id !== "new-tab" && (
-                  <p className="mt-3 truncate text-[11px] text-white/35">Current: {commandTarget.title}</p>
+                {selectedCommandTarget && activeCommand.id !== "new-tab" && (
+                  <p className="mt-3 truncate text-[11px] text-white/35">Selected: {selectedCommandTarget.title}</p>
                 )}
               </div>
             </div>
