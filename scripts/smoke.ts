@@ -8,7 +8,8 @@
  *   1. The preview overlay injects exactly once and focuses its frame.
  *   2. Responsive light/dark, wide/narrow, and accessibility contracts hold.
  *   3. Palette starts at the newest tab and Alt/Option+W closes that selection.
- *   4. Cmd+Option+/ moves the highlighted tab into a tiled second window.
+ *   4. Cmd+Option+/ closes the palette and guides Chrome's native Split View
+ *      without creating or moving any window.
  *   5. Host-page spoofed lifecycle messages are ignored.
  *   6. Popup and standalone sizing stay within their viewports.
  *   7. Universal intent search renders all available typed sources.
@@ -240,7 +241,6 @@ async function main(): Promise<number> {
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-features=ChromeWhatsNewUI",
-    "--window-size=1440,900",
   ];
 
   let proc: ReturnType<typeof Bun.spawn> | undefined;
@@ -304,15 +304,13 @@ async function main(): Promise<number> {
   try {
     // Try headless=new first (CI-friendly); fall back to headful once if the
     // extension/page targets never come up.
-    const forceHeadful = process.env.TABKNIGHT_SMOKE_HEADFUL === "1";
-    mode = forceHeadful ? "headful" : "--headless=new";
-    proc = launch(!forceHeadful);
+    mode = "--headless=new";
+    proc = launch(true);
 
     let targets: Awaited<ReturnType<typeof setUp>>;
     try {
       targets = await setUp();
     } catch (headlessErr) {
-      if (forceHeadful) throw headlessErr;
       console.log(
         `headless=new setup failed (${(headlessErr as Error).message}); retrying headful...`
       );
@@ -644,9 +642,9 @@ async function main(): Promise<number> {
       });
     }
 
-    /* ---------------- TEST 4: one-step side-by-side windows ---------------- */
+    /* ------------- TEST 4: native Split View handoff, no windows ------------ */
     try {
-      const sideBySideSetup = JSON.parse(
+      const splitGuideSetup = JSON.parse(
         await evaluate(
           sw,
           `(async () => {
@@ -654,10 +652,10 @@ async function main(): Promise<number> {
             await chrome.tabs.update(origin.id, { active: true });
             const selected = await chrome.tabs.create({
               windowId: origin.windowId,
-              url: "${testUrl}?side-by-side-selected=1",
+              url: "${testUrl}?native-split-selected=1",
               active: false,
             });
-            const contextId = "preview-side-by-side-smoke";
+            const contextId = "preview-native-split-smoke";
             const paletteUrl = chrome.runtime.getURL("popup/index.html?standalone=1&context=" + contextId);
             await chrome.storage.local.set({
               [contextId]: {
@@ -666,130 +664,105 @@ async function main(): Promise<number> {
                 createdAt: Date.now(),
               },
             });
-            const palette = await chrome.tabs.create({
-              windowId: origin.windowId,
-              url: paletteUrl,
-              active: true,
-            });
+            await chrome.tabs.create({ windowId: origin.windowId, url: paletteUrl, active: true });
+            const windows = await chrome.windows.getAll();
             return JSON.stringify({
               originId: origin.id,
               selectedId: selected.id,
               paletteUrl,
+              windowIds: windows.map((window) => window.id).sort(),
             });
           })()`
         )
       );
-      const sideBySideTarget = await waitFor(
+      const splitGuideTarget = await waitFor(
         async () => {
           const list = await jsonList(port);
-          return list.find((target) => target.type === "page" && target.url === sideBySideSetup.paletteUrl);
+          return list.find((target) => target.type === "page" && target.url === splitGuideSetup.paletteUrl);
         },
-        { timeoutMs: 5000, intervalMs: 100, label: "side-by-side palette target" }
+        { timeoutMs: 5000, intervalMs: 100, label: "native Split View guide palette" }
       );
-      if (!sideBySideTarget.webSocketDebuggerUrl) throw new Error("side-by-side target has no debugger URL");
-      const sideBySideCdp = new CDP(sideBySideTarget.webSocketDebuggerUrl);
-      await sideBySideCdp.send("Runtime.enable");
-      const sideBySideInitial = await waitFor(
+      if (!splitGuideTarget.webSocketDebuggerUrl) throw new Error("split guide target has no debugger URL");
+      const splitGuideCdp = new CDP(splitGuideTarget.webSocketDebuggerUrl);
+      await splitGuideCdp.send("Runtime.enable");
+      const selectedState = await waitFor(
         async () => {
           const state = JSON.parse(
             await evaluate(
-              sideBySideCdp,
+              splitGuideCdp,
               `(() => {
                 const input = document.querySelector('[role="combobox"]');
                 const selected = document.querySelector('[role="option"][aria-selected="true"]');
                 input?.focus();
-                return JSON.stringify({
-                  selectedId: selected?.id ?? null,
-                  focused: document.activeElement === input,
-                  availWidth: screen.availWidth,
-                });
+                return JSON.stringify({ selectedId: selected?.id ?? null, focused: document.activeElement === input });
               })()`
             )
           );
           return state.selectedId ? state : null;
         },
-        { timeoutMs: 5000, intervalMs: 100, label: "side-by-side highlighted target" }
+        { timeoutMs: 5000, intervalMs: 100, label: "native Split View selected row" }
       );
-      if (sideBySideInitial.selectedId !== `tk-result-tab-${sideBySideSetup.selectedId}` || !sideBySideInitial.focused) {
-        throw new Error(`wrong side-by-side target: ${JSON.stringify(sideBySideInitial)}`);
+      if (selectedState.selectedId !== `tk-result-tab-${splitGuideSetup.selectedId}` || !selectedState.focused) {
+        throw new Error(`wrong Split View guide target: ${JSON.stringify(selectedState)}`);
       }
 
-      await sideBySideCdp.send("Input.dispatchKeyEvent", {
+      await splitGuideCdp.send("Input.dispatchKeyEvent", {
         type: "keyDown",
         key: "/",
         code: "Slash",
         modifiers: 5,
       });
-      await sideBySideCdp.send("Input.dispatchKeyEvent", {
+      await splitGuideCdp.send("Input.dispatchKeyEvent", {
         type: "keyUp",
         key: "/",
         code: "Slash",
         modifiers: 5,
       });
 
-      if (sideBySideInitial.availWidth < 1008) {
-        const narrowFailure = await waitFor(
-          async () => {
-            const announcement = await evaluate(
-              sideBySideCdp,
-              `document.querySelector('[role="status"]')?.textContent ?? ""`
-            );
-            return announcement.includes("display is too narrow") ? announcement : null;
-          },
-          { timeoutMs: 3000, intervalMs: 100, label: "safe narrow-display rejection" }
-        );
-        const sameWindow = await evaluate(
+      await waitFor(
+        async () => {
+          const list = await jsonList(port);
+          return !list.some((target) => target.id === splitGuideTarget.id);
+        },
+        { timeoutMs: 3000, intervalMs: 100, label: "Split View guide palette to close" }
+      );
+      const hintText = await waitFor(
+        async () => {
+          const text = await evaluate(
+            page,
+            `document.getElementById("tabknight-split-view-hint")?.shadowRoot?.textContent ?? ""`
+          );
+          return text.includes("⌘⌥N") ? text : null;
+        },
+        { timeoutMs: 3000, intervalMs: 100, label: "native Split View instruction" }
+      );
+      const unchanged = JSON.parse(
+        await evaluate(
           sw,
           `(async () => {
-            const origin = await chrome.tabs.get(${sideBySideSetup.originId});
-            const selected = await chrome.tabs.get(${sideBySideSetup.selectedId});
-            return origin.windowId === selected.windowId;
+            const [origin, selected, windows] = await Promise.all([
+              chrome.tabs.get(${splitGuideSetup.originId}),
+              chrome.tabs.get(${splitGuideSetup.selectedId}),
+              chrome.windows.getAll(),
+            ]);
+            return JSON.stringify({
+              sameWindow: origin.windowId === selected.windowId,
+              windowIds: windows.map((window) => window.id).sort(),
+            });
           })()`
-        );
-        if (!sameWindow || !narrowFailure) throw new Error("narrow display left a partial layout");
-      } else {
-        const tiled = await waitFor(
-          async () => {
-            const state = JSON.parse(
-              await evaluate(
-                sw,
-                `(async () => {
-                  const origin = await chrome.tabs.get(${sideBySideSetup.originId});
-                  const selected = await chrome.tabs.get(${sideBySideSetup.selectedId});
-                  if (origin.windowId === selected.windowId) return JSON.stringify({ tiled: false });
-                  const [left, right] = await Promise.all([
-                    chrome.windows.get(origin.windowId),
-                    chrome.windows.get(selected.windowId),
-                  ]);
-                  return JSON.stringify({
-                    tiled: true,
-                    originActive: origin.active,
-                    selectedActive: selected.active,
-                    selectedFocused: right.focused,
-                    left: { left: left.left, top: left.top, width: left.width, height: left.height },
-                    right: { left: right.left, top: right.top, width: right.width, height: right.height },
-                  });
-                })()`
-              )
-            );
-            return state.tiled && state.originActive && state.selectedActive && state.selectedFocused
-              ? state
-              : null;
-          },
-          { timeoutMs: 5000, intervalMs: 100, label: "two tiled Chrome windows" }
-        );
-        if (!tiled.originActive || !tiled.selectedActive || !tiled.selectedFocused) {
-          throw new Error(`paired tabs were not active/focused: ${JSON.stringify(tiled)}`);
-        }
-        if (tiled.left.left + tiled.left.width > tiled.right.left || tiled.left.height !== tiled.right.height) {
-          throw new Error(`windows were not tiled side by side: ${JSON.stringify(tiled)}`);
-        }
+        )
+      );
+      if (!hintText.includes("Chrome Split View") || !unchanged.sameWindow) {
+        throw new Error(`native Split View handoff incomplete: ${JSON.stringify({ hintText, unchanged })}`);
       }
-      sideBySideCdp.close();
-      results.push({ name: "Cmd+Option+/ tiles or safely rejects a narrow display", ok: true });
+      if (JSON.stringify(unchanged.windowIds) !== JSON.stringify(splitGuideSetup.windowIds)) {
+        throw new Error(`Split View guide changed browser windows: ${JSON.stringify(unchanged)}`);
+      }
+      splitGuideCdp.close();
+      results.push({ name: "Cmd+Option+/ guides native Split View without changing windows", ok: true });
     } catch (err) {
       results.push({
-        name: "Cmd+Option+/ tiles or safely rejects a narrow display",
+        name: "Cmd+Option+/ guides native Split View without changing windows",
         ok: false,
         error: (err as Error).message,
       });

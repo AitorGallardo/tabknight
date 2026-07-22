@@ -150,9 +150,6 @@
   animation: tk-row-in 160ms var(--tk-ease) both;
 }
 
-/* One restrained confirmation beat before the selected tab leaves the rail
-   and becomes the right-hand window. No spring or bounce: it reuses the
-   palette's quick easing token and finishes in a single 140ms beat. */
 @keyframes tk-pairing {
   0% {
     transform: scale(1);

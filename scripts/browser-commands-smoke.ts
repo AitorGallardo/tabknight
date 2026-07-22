@@ -14,7 +14,7 @@ assert(findBrowserCommands(">", { targetTab: regular }).length === 7, "> must re
 assert(findBrowserCommands("> dup", { targetTab: regular })[0]?.id === "duplicate-tab", "> must filter commands");
 assert(findBrowserCommands("close", { targetTab: regular })[0]?.id === "close-tab", "Close must be discoverable");
 assert(getBrowserCommand("close-tab", { targetTab: regular })?.shortcut === "⌥W / Alt+W", "Close shortcut must be visible");
-assert(getBrowserCommand("side-by-side", { targetTab: regular })?.shortcut === "⌘⌥/", "Side-by-side shortcut must be visible");
+assert(getBrowserCommand("native-split-view", { targetTab: regular })?.shortcut === "⌘⌥/", "Split View guide shortcut must be visible");
 for (const [query, id] of [
   ["close tab", "close-tab"],
   ["duplicate tab", "duplicate-tab"],
@@ -22,7 +22,7 @@ for (const [query, id] of [
   ["mute tab", "mute-tab"],
   ["reload tab", "reload-tab"],
   ["new tab", "new-tab"],
-  ["side by side", "side-by-side"],
+  ["split view", "native-split-view"],
 ] as const) {
   assert(findBrowserCommands(query, { targetTab: regular })[0]?.id === id, `${query} must find ${id}`);
 }
@@ -40,19 +40,19 @@ const api = {
   update: async (id: number, props: { pinned?: boolean; muted?: boolean }) => void calls.push(`update:${id}:${JSON.stringify(props)}`),
   reload: async (id: number) => void calls.push(`reload:${id}`),
   create: async ({ url }: { url: string; active: boolean }) => void calls.push(`create:${url}`),
-  openSideBySide: async (id: number) => void calls.push(`side-by-side:${id}`),
+  showNativeSplitHint: async (id: number, title: string) => void calls.push(`split-hint:${id}:${title}`),
 };
 
 await executeBrowserCommand("duplicate-tab", regular, api);
 await executeBrowserCommand("pin-tab", regular, api);
 await executeBrowserCommand("mute-tab", regular, api);
 await executeBrowserCommand("reload-tab", regular, api);
-await executeBrowserCommand("side-by-side", regular, api);
+await executeBrowserCommand("native-split-view", regular, api);
 await executeBrowserCommand("new-tab", null, api);
 await executeBrowserCommand("unpin-tab", pinnedMuted, api);
 await executeBrowserCommand("unmute-tab", pinnedMuted, api);
 await executeBrowserCommand("close-tab", regular, api);
-assert(calls.join("|") === 'duplicate:7|update:7:{"pinned":true}|update:7:{"muted":true}|reload:7|side-by-side:7|create:chrome://newtab/|update:7:{"pinned":false}|update:7:{"muted":false}|remove:7', "Execution must route exactly once");
+assert(calls.join("|") === 'duplicate:7|update:7:{"pinned":true}|update:7:{"muted":true}|reload:7|split-hint:7:Example|create:chrome://newtab/|update:7:{"pinned":false}|update:7:{"muted":false}|remove:7', "Execution must route exactly once");
 
 let rejected = false;
 try {

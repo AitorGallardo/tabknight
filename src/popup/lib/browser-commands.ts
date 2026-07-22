@@ -6,7 +6,7 @@ export type BrowserCommandId =
   | "mute-tab"
   | "unmute-tab"
   | "reload-tab"
-  | "side-by-side"
+  | "native-split-view"
   | "new-tab";
 
 export interface BrowserCommandTab {
@@ -98,12 +98,12 @@ const COMMANDS: readonly CommandDefinition[] = [
     available: ({ targetTab }) => targetTab !== null,
   },
   {
-    id: "side-by-side",
-    label: "Open Selected Tab Side by Side",
-    actionLabel: "Open Side by Side",
-    description: "Move the highlighted tab into a Chrome window tiled beside the current tab",
+    id: "native-split-view",
+    label: "Add Selected Tab to Chrome Split View",
+    actionLabel: "Start Split View",
+    description: "Close TabKnight and continue in Chrome's native same-window Split View picker",
     shortcut: "⌘⌥/",
-    keywords: ["side by side", "split view", "split", "tile", "two windows", "selected tab"],
+    keywords: ["split view", "split", "side by side", "pair tabs", "selected tab"],
     available: ({ targetTab }) => targetTab !== null,
   },
   {

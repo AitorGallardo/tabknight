@@ -22,7 +22,6 @@ import { Kbd } from "../components/Kbd";
 import { ResultLabels } from "../components/ResultLabels";
 import { scoreTab } from "../lib/rank";
 import { rankIntentResults } from "../lib/intent-search";
-import { openTabSideBySide } from "../lib/side-by-side";
 import type { IntentBookmark, IntentHistoryEntry, IntentResult } from "../lib/intent-search";
 import { useListNavigation } from "../hooks/useListNavigation";
 import {
@@ -43,9 +42,9 @@ interface TabPreviewViewProps {
   invocationId?: string | null;
 }
 
-function postToParent(type: "ready" | "close", invocationId?: string | null): void {
+function postToParent(type: "ready" | "close" | "native-split-hint", invocationId?: string | null, title?: string): void {
   try {
-    window.parent.postMessage({ source: "tabknight-preview", type, invocationId }, "*");
+    window.parent.postMessage({ source: "tabknight-preview", type, invocationId, title }, "*");
   } catch {
     // No parent / cross-origin restriction — safe to ignore.
   }
@@ -93,7 +92,7 @@ interface PlaybackState {
 const PAUSE_DEBOUNCE_MS = 800;
 const HINT_MS = 2500;
 const THUMB_DEBOUNCE_MS = 70;
-const SIDE_BY_SIDE_MOTION_MS = 140;
+const NATIVE_SPLIT_MOTION_MS = 140;
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -1309,11 +1308,11 @@ export function TabPreviewView({
           setCommandTarget(freshTarget);
         }
 
-        if (command.id === "side-by-side") {
+        if (command.id === "native-split-view") {
           setPairingTabId(freshTarget!.id);
-          setAnnouncement(`Placing ${freshTarget!.title} beside the current tab`);
+          setAnnouncement(`Preparing Chrome Split View with ${freshTarget!.title}`);
           if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-            await new Promise<void>((resolve) => setTimeout(resolve, SIDE_BY_SIDE_MOTION_MS));
+            await new Promise<void>((resolve) => setTimeout(resolve, NATIVE_SPLIT_MOTION_MS));
           }
         }
 
@@ -1323,16 +1322,17 @@ export function TabPreviewView({
           update: async (tabId, properties) => chrome.tabs.update(tabId, properties),
           reload: async (tabId) => chrome.tabs.reload(tabId),
           create: async (properties) => chrome.tabs.create(properties),
-          openSideBySide: async (tabId) => {
+          showNativeSplitHint: async (_tabId, title) => {
+            if (overlay) {
+              postToParent("native-split-hint", invocationId, title);
+              return;
+            }
             const originTabId = originTabIdRef.current;
-            if (originTabId === null) throw new Error("The current tab is no longer available");
-            const display = window.screen as Screen & { availLeft?: number; availTop?: number };
-            await openTabSideBySide(originTabId, tabId, {
-              left: display.availLeft ?? 0,
-              top: display.availTop ?? 0,
-              width: display.availWidth,
-              height: display.availHeight,
-            });
+            if (originTabId !== null) {
+              await chrome.tabs
+                .sendMessage(originTabId, { type: "SHOW_NATIVE_SPLIT_HINT", title })
+                .catch(() => {});
+            }
           },
         });
 
@@ -1361,7 +1361,7 @@ export function TabPreviewView({
         commandInFlightRef.current = false;
       }
     },
-    [commandTarget, dismiss]
+    [commandTarget, dismiss, invocationId, overlay]
   );
 
   const sendPlayToggle = useCallback(
@@ -1497,10 +1497,10 @@ export function TabPreviewView({
         event.metaKey &&
         event.altKey &&
         !event.ctrlKey &&
-        event.code === "Slash"
+        (event.code === "Slash" || event.code === "Backslash")
       ) {
         event.preventDefault();
-        const command = getBrowserCommand("side-by-side", { targetTab: selectedCommandTarget });
+        const command = getBrowserCommand("native-split-view", { targetTab: selectedCommandTarget });
         if (command) void runCommand(command, selectedCommandTarget);
         return true;
       }
@@ -1594,7 +1594,7 @@ export function TabPreviewView({
           <Kbd>esc</Kbd> {query !== "" ? "Clear" : "Close"}
         </span>
         <span className="flex items-center gap-1.5"><Kbd>&gt;</Kbd> Commands</span>
-        <span className="flex items-center gap-1.5"><Kbd>⌘⌥/</Kbd> Side by side</span>
+        <span className="flex items-center gap-1.5"><Kbd>⌘⌥/</Kbd> Chrome Split View</span>
         <span className="flex items-center gap-1.5"><Kbd>⌥</Kbd> Quick actions</span>
       </div>
     );

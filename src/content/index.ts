@@ -110,6 +110,7 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean; __tabknightDocume
   // and ask the background to fall back to the standalone tab.
 
   const PREVIEW_HOST_ID = "tabknight-preview-host";
+  const SPLIT_HINT_HOST_ID = "tabknight-split-view-hint";
   const PREVIEW_MOTION_MS = 140;
   const PREVIEW_SKELETON_FADE_MS = 150;
   const PREVIEW_MOTION_BACKSTOP_MS = 200;
@@ -131,6 +132,56 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean; __tabknightDocume
 
   function prefersReducedMotion(): boolean {
     return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  function showNativeSplitViewHint(tabTitle: string): void {
+    document.getElementById(SPLIT_HINT_HOST_ID)?.remove();
+    const host = document.createElement("div");
+    host.id = SPLIT_HINT_HOST_ID;
+    const shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML = `
+      <style>
+        :host { all: initial; }
+        .hint {
+          position: fixed; top: 18px; left: 50%; z-index: 2147483647;
+          display: flex; align-items: center; gap: 10px;
+          max-width: min(520px, calc(100vw - 32px));
+          padding: 10px 12px; border-radius: 12px;
+          color: rgba(255,255,255,.94); background: rgba(24,24,27,.90);
+          border: 1px solid rgba(255,255,255,.12);
+          box-shadow: 0 14px 44px rgba(0,0,0,.34);
+          backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+          font: 500 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif;
+          opacity: 0; transform: translate(-50%, -4px) scale(.985);
+          transition: opacity 140ms cubic-bezier(.2,.8,.2,1), transform 140ms cubic-bezier(.2,.8,.2,1);
+        }
+        .hint.visible { opacity: 1; transform: translate(-50%, 0) scale(1); }
+        .keys {
+          flex: none; padding: 3px 6px; border-radius: 6px;
+          color: white; background: rgba(10,132,255,.24);
+          border: 1px solid rgba(94,174,255,.36); font-weight: 700;
+        }
+        .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        @media (prefers-color-scheme: light) {
+          .hint { color: rgba(17,24,39,.92); background: rgba(255,255,255,.92); border-color: rgba(0,0,0,.10); }
+          .keys { color: #0057b8; background: rgba(0,104,217,.10); border-color: rgba(0,104,217,.20); }
+        }
+        @media (prefers-reduced-motion: reduce) { .hint { transition: none; transform: translate(-50%, 0); } }
+      </style>
+      <div class="hint" role="status" aria-live="polite">
+        <span>Press</span>
+        <span class="keys">⌘⌥N</span>
+        <span class="title"></span>
+      </div>
+    `;
+    shadow.querySelector<HTMLElement>(".title")!.textContent = `then select “${tabTitle}” in Chrome Split View`;
+    document.documentElement.appendChild(host);
+    const hint = shadow.querySelector<HTMLElement>(".hint");
+    requestAnimationFrame(() => requestAnimationFrame(() => hint?.classList.add("visible")));
+    window.setTimeout(() => {
+      hint?.classList.remove("visible");
+      window.setTimeout(() => host.remove(), prefersReducedMotion() ? 0 : PREVIEW_MOTION_MS);
+    }, 4200);
   }
 
   function finishPreviewClose(host = previewHost): void {
@@ -318,7 +369,7 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean; __tabknightDocume
 
   // Messages from the React app inside the iframe (cross-frame postMessage).
   window.addEventListener("message", (event) => {
-    const data = event.data as { source?: string; type?: string; invocationId?: string } | undefined;
+    const data = event.data as { source?: string; type?: string; invocationId?: string; title?: string } | undefined;
     const expectedOrigin = new URL(chrome.runtime.getURL("/")).origin;
     if (
       data?.source !== "tabknight-preview" ||
@@ -334,6 +385,9 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean; __tabknightDocume
       previewHost?.shadowRoot
         ?.querySelector<HTMLElement>("[data-role='skeleton']")
         ?.classList.add("tkp-hidden");
+    }
+    if (data.type === "native-split-hint" && typeof data.title === "string") {
+      showNativeSplitViewHint(data.title);
     }
     if (data.type === "close") closePreviewOverlay();
   });
@@ -434,6 +488,12 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean; __tabknightDocume
 
     if (message?.type === "MEDIA_STATUS") {
       sendResponse(handleMediaStatus());
+      return false;
+    }
+
+    if (message?.type === "SHOW_NATIVE_SPLIT_HINT" && typeof message.title === "string") {
+      showNativeSplitViewHint(message.title);
+      sendResponse({ ok: true });
       return false;
     }
 
