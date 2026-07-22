@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   separateNativeSplit,
+  isNavigatorTabCandidate,
   splitPartnerTitles,
   splitViewIdOf,
   type SplitAwareTab,
@@ -80,6 +81,16 @@ describe("native Split View metadata", () => {
       [1, "Tab 2"],
       [2, "Tab 1"],
     ]);
+  });
+
+  test("hides a regular origin but keeps both members of the current split", () => {
+    const regularOrigin = tab(1, 0);
+    const splitOrigin = tab(1, 0, { splitViewId: 8 });
+    const splitPartner = tab(2, 1, { splitViewId: 8 });
+
+    expect(isNavigatorTabCandidate(regularOrigin, "chrome-extension://self/", 1, null)).toBe(false);
+    expect(isNavigatorTabCandidate(splitOrigin, "chrome-extension://self/", 1, 8)).toBe(true);
+    expect(isNavigatorTabCandidate(splitPartner, "chrome-extension://self/", 1, 8)).toBe(true);
   });
 });
 

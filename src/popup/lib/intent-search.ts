@@ -15,6 +15,7 @@ export interface IntentTab {
   discarded?: boolean;
   splitViewId?: number | null;
   splitPartnerTitle?: string;
+  isOrigin?: boolean;
 }
 
 export interface IntentBookmark {

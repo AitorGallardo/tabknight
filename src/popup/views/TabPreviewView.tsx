@@ -24,7 +24,7 @@ import { scoreTab } from "../lib/rank";
 import { rankIntentResults } from "../lib/intent-search";
 import type { IntentBookmark, IntentHistoryEntry, IntentResult } from "../lib/intent-search";
 import { useListNavigation } from "../hooks/useListNavigation";
-import { separateNativeSplit, splitPartnerTitles, splitViewIdOf } from "../lib/split-view";
+import { isNavigatorTabCandidate, separateNativeSplit, splitPartnerTitles, splitViewIdOf } from "../lib/split-view";
 import {
   DEFAULT_PREVIEW_TEXT_PREFERENCE,
   PREVIEW_TEXT_PREFERENCE_KEY,
@@ -66,6 +66,7 @@ interface NavigatorTab {
   discarded?: boolean;
   splitViewId?: number | null;
   splitPartnerTitle?: string;
+  isOrigin?: boolean;
 }
 
 function commandTargetForTab(tab: NavigatorTab): BrowserCommandTab {
@@ -359,6 +360,8 @@ export function TabPreviewView({
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const [currentWindowId, setCurrentWindowId] = useState<number | null>(null);
+  const [currentSplitViewId, setCurrentSplitViewId] = useState<number | null>(null);
+  const [originSplitTarget, setOriginSplitTarget] = useState<BrowserCommandTab | null>(null);
   const [commandTarget, setCommandTarget] = useState<BrowserCommandTab | null>(null);
   const commandInFlightRef = useRef(false);
   const originTabIdRef = useRef<number | null>(null);
@@ -485,6 +488,19 @@ export function TabPreviewView({
               (tab) => tab.active && tab.windowId === currentWindowId && !!tab.url && !tab.url.startsWith(selfUrl)
             );
       originTabIdRef.current = originTab?.id ?? null;
+      const originSplitViewId = originTab ? splitViewIdOf(originTab) : null;
+      setCurrentSplitViewId(originSplitViewId);
+      setOriginSplitTarget(
+        originTab?.id !== undefined && originSplitViewId !== null
+          ? {
+              id: originTab.id,
+              title: originTab.title || originTab.url || "Current tab",
+              pinned: !!originTab.pinned,
+              muted: !!originTab.mutedInfo?.muted,
+              splitViewId: originSplitViewId,
+            }
+          : null
+      );
       setCommandTarget(
         originTab?.id !== undefined
           ? {
@@ -499,14 +515,7 @@ export function TabPreviewView({
 
       const partnerTitles = splitPartnerTitles(allTabs);
       const normalized = allTabs
-        .filter(
-          (tab): tab is chrome.tabs.Tab & { id: number; windowId: number; url: string } =>
-            tab.id !== undefined &&
-            tab.windowId !== undefined &&
-            !!tab.url &&
-            !tab.url.startsWith(selfUrl) &&
-            !(tab.active && tab.windowId === currentWindowId)
-        )
+        .filter((tab) => isNavigatorTabCandidate(tab, selfUrl, originTab?.id ?? null, originSplitViewId))
         .map((tab) => ({
           id: tab.id,
           windowId: tab.windowId,
@@ -522,6 +531,7 @@ export function TabPreviewView({
           discarded: tab.discarded || false,
           splitViewId: splitViewIdOf(tab),
           splitPartnerTitle: partnerTitles.get(tab.id),
+          isOrigin: tab.id === originTab?.id,
         }));
 
       setTabs(normalized);
@@ -694,15 +704,22 @@ export function TabPreviewView({
       .sort((a, b) => {
         if (q) {
           if (b.score !== a.score) return b.score - a.score;
-        } else if (b.tab.lastAccessed !== a.tab.lastAccessed) {
-          return b.tab.lastAccessed - a.tab.lastAccessed;
+        } else {
+          const aInCurrentSplit = currentSplitViewId !== null && a.tab.splitViewId === currentSplitViewId;
+          const bInCurrentSplit = currentSplitViewId !== null && b.tab.splitViewId === currentSplitViewId;
+          if (aInCurrentSplit !== bInCurrentSplit) return aInCurrentSplit ? -1 : 1;
+          if (aInCurrentSplit && bInCurrentSplit) {
+            if (!!a.tab.isOrigin !== !!b.tab.isOrigin) return a.tab.isOrigin ? -1 : 1;
+            return a.tab.index - b.tab.index;
+          }
+          if (b.tab.lastAccessed !== a.tab.lastAccessed) return b.tab.lastAccessed - a.tab.lastAccessed;
         }
         if (a.tab.windowId === currentWindowId && b.tab.windowId !== currentWindowId) return -1;
         if (b.tab.windowId === currentWindowId && a.tab.windowId !== currentWindowId) return 1;
         return a.tab.index - b.tab.index;
       })
       .map(({ tab }) => tab);
-  }, [tabs, query, currentWindowId]);
+  }, [tabs, query, currentWindowId, currentSplitViewId]);
 
   // Featured rail sections (tabs mode, no active search only): "Recent" is the
   // top N of rankedTabs (already lastAccessed-desc when unsearched); "Most
@@ -745,6 +762,13 @@ export function TabPreviewView({
   );
   const featuredRecentCount = featured?.recent.length ?? 0;
   const featuredMostVisitedCount = featured?.mostVisited.length ?? 0;
+  const currentSplitPairCount = useMemo(
+    () =>
+      currentSplitViewId === null
+        ? 0
+        : orderedTabs.filter((tab) => tab.splitViewId === currentSplitViewId).length,
+    [orderedTabs, currentSplitViewId]
+  );
 
   // Rows sharing a title (e.g. several GitHub PRs, several Google Docs) get a
   // domain hint appended so they stay distinguishable at a glance.
@@ -856,6 +880,10 @@ export function TabPreviewView({
   // temporarily replaces tab rows, retain the last highlighted tab as the
   // command target instead of silently falling back to the page underneath.
   const selectedCommandTarget = activeTabItem ? commandTargetForTab(activeTabItem) : commandTarget;
+  const splitCommandTarget =
+    selectedCommandTarget?.splitViewId !== null && selectedCommandTarget?.splitViewId !== undefined
+      ? selectedCommandTarget
+      : originSplitTarget;
   useEffect(() => {
     if (mode !== "tabs" || !activeTabItem) return;
     const next = commandTargetForTab(activeTabItem);
@@ -1523,10 +1551,10 @@ export function TabPreviewView({
         event.altKey &&
         event.code === "KeyU"
       ) {
-        const command = getBrowserCommand("separate-split-view", { targetTab: selectedCommandTarget });
+        const command = getBrowserCommand("separate-split-view", { targetTab: splitCommandTarget });
         if (command) {
           event.preventDefault();
-          void runCommand(command, selectedCommandTarget);
+          void runCommand(command, splitCommandTarget);
           return true;
         }
       }
@@ -1563,7 +1591,7 @@ export function TabPreviewView({
       }
       return false;
     },
-    [mode, query, selectedCommandTarget, runCommand, enterAudioMode, enterTabsMode, toggleSelectedPlay, toggleSelectedMute]
+    [mode, query, selectedCommandTarget, splitCommandTarget, runCommand, enterAudioMode, enterTabsMode, toggleSelectedPlay, toggleSelectedMute]
   );
 
   const { listRef, registerItem } = useListNavigation({
@@ -1621,7 +1649,7 @@ export function TabPreviewView({
         </span>
         <span className="flex items-center gap-1.5"><Kbd>&gt;</Kbd> Commands</span>
         <span className="flex items-center gap-1.5"><Kbd>⌘⌥\</Kbd> Chrome Split View</span>
-        {selectedCommandTarget?.splitViewId !== null && selectedCommandTarget?.splitViewId !== undefined && (
+        {splitCommandTarget && (
           <span className="flex items-center gap-1.5"><Kbd>⌘⌥U</Kbd> Unsplit</span>
         )}
         <span className="flex items-center gap-1.5"><Kbd>⌥</Kbd> Quick actions</span>
@@ -1912,11 +1940,17 @@ export function TabPreviewView({
                         </span>
                         <span className={`block truncate text-[11px] ${active ? "text-white/70" : "text-white/45"}`}>
                           {domainOf(url)}
-                          {item.type === "tab" && item.tab.splitPartnerTitle ? ` · Split with ${item.tab.splitPartnerTitle}` : ""}
+                          {item.type === "tab" && item.tab.splitPartnerTitle
+                            ? ` · ${item.tab.isOrigin ? "Current view · " : ""}Split with ${item.tab.splitPartnerTitle}`
+                            : ""}
                         </span>
                       </span>
                       {item.type === "tab" && pairingTabId === item.tab.id ? (
                         <Columns2 className="h-3.5 w-3.5 shrink-0 text-white" aria-hidden="true" />
+                      ) : item.type === "tab" && item.tab.splitViewId !== null && item.tab.splitViewId !== undefined ? (
+                        <span className={`flex shrink-0 items-center gap-1 text-[10px] font-medium ${active ? "text-white/85" : "text-white/45"}`}>
+                          <Columns2 className="h-3 w-3" /> Split
+                        </span>
                       ) : (
                         <span className={`shrink-0 text-[10px] font-medium ${active ? "text-white/80" : "text-white/40"}`}>
                           {item.sourceLabel}
@@ -1935,7 +1969,21 @@ export function TabPreviewView({
                   const isFeatured = inRecentSection || inMostVisitedSection;
 
                   let header: string | null = null;
-                  if (showBuckets && inRecentSection && index === 0) {
+                  if (
+                    showBuckets &&
+                    currentSplitViewId !== null &&
+                    tab.splitViewId === currentSplitViewId &&
+                    index === 0
+                  ) {
+                    header = "Current split view";
+                  } else if (
+                    showBuckets &&
+                    currentSplitPairCount > 0 &&
+                    index === currentSplitPairCount &&
+                    inRecentSection
+                  ) {
+                    header = "Recent";
+                  } else if (showBuckets && inRecentSection && index === 0) {
                     header = "Recent";
                   } else if (showBuckets && inMostVisitedSection && index === featuredRecentCount) {
                     header = "Most visited";
@@ -1977,7 +2025,7 @@ export function TabPreviewView({
                             : undefined),
                           ...(showEntrance ? { animationDelay: `${index * 18}ms` } : undefined),
                         }}
-                        aria-label={`${tab.title}. Open tab. Switch.${tab.splitPartnerTitle ? ` Split with ${tab.splitPartnerTitle}.` : ""}${tab.pinned ? " Pinned." : ""}${tab.audible ? " Playing audio." : ""}${tab.muted ? " Muted." : ""}${tab.discarded ? " Discarded." : ""}`}
+                        aria-label={`${tab.title}. Open tab. Switch.${tab.isOrigin ? " Current view." : ""}${tab.splitPartnerTitle ? ` Split with ${tab.splitPartnerTitle}.` : ""}${tab.pinned ? " Pinned." : ""}${tab.audible ? " Playing audio." : ""}${tab.muted ? " Muted." : ""}${tab.discarded ? " Discarded." : ""}`}
                         className={`flex w-full items-center gap-2 rounded-[9px] px-2 py-1 text-left transition-colors duration-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/70 ${showEntrance ? "tk-row-in" : ""} ${pairingTabId === tab.id ? "tk-pairing" : ""} ${
                           active
                             ? "bg-[#0057b8] text-white ring-2 ring-inset ring-white/55 shadow-sm dark:bg-[#0a84ff]"
@@ -1999,12 +2047,18 @@ export function TabPreviewView({
                           </span>
                           {(isDuplicateTitle || tab.splitPartnerTitle) && (
                             <span className={`block truncate text-[11px] ${active ? "text-white/85" : "text-black/50 dark:text-white/45"}`}>
-                              {tab.splitPartnerTitle ? `Split with ${tab.splitPartnerTitle}` : domainOf(tab.url)}
+                              {tab.splitPartnerTitle
+                                ? `${tab.isOrigin ? "Current view · " : ""}Split with ${tab.splitPartnerTitle}`
+                                : domainOf(tab.url)}
                             </span>
                           )}
                         </span>
                         {pairingTabId === tab.id ? (
                           <Columns2 className="h-3.5 w-3.5 shrink-0 text-white" aria-hidden="true" />
+                        ) : tab.splitViewId !== null && tab.splitViewId !== undefined ? (
+                          <span className={`flex shrink-0 items-center gap-1 text-[10px] font-medium ${active ? "text-white/85" : "text-[#0057b8] dark:text-[#70b8ff]"}`}>
+                            <Columns2 className="h-3 w-3" /> Split
+                          </span>
                         ) : (
                           <ResultLabels active={active} />
                         )}
@@ -2173,7 +2227,9 @@ export function TabPreviewView({
               {activeTabItem.splitPartnerTitle && (
                 <div className="mt-2 inline-flex max-w-full items-center gap-1.5 rounded-md border border-[#0068d9]/20 bg-[#0068d9]/[0.07] px-2 py-1 text-[11px] text-[#0057b8] dark:border-[#0a84ff]/25 dark:bg-[#0a84ff]/10 dark:text-[#70b8ff]">
                   <Columns2 className="h-3 w-3 shrink-0" />
-                  <span className="truncate">Split with {activeTabItem.splitPartnerTitle}</span>
+                  <span className="truncate">
+                    {activeTabItem.isOrigin ? "Current view · " : ""}Split with {activeTabItem.splitPartnerTitle}
+                  </span>
                 </div>
               )}
 

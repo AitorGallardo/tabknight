@@ -16,6 +16,24 @@ export interface SeparateSplitResult {
   separatedTabIds: number[];
 }
 
+export type NavigatorTabCandidate = chrome.tabs.Tab & { id: number; windowId: number; url: string };
+
+/** Keep the current page hidden normally, but show it when it belongs to a split so both members are visible. */
+export function isNavigatorTabCandidate(
+  tab: chrome.tabs.Tab,
+  selfUrl: string,
+  originTabId: number | null,
+  originSplitViewId: number | null
+): tab is NavigatorTabCandidate {
+  return (
+    tab.id !== undefined &&
+    tab.windowId !== undefined &&
+    !!tab.url &&
+    !tab.url.startsWith(selfUrl) &&
+    !(tab.id === originTabId && originSplitViewId === null)
+  );
+}
+
 /** Chrome uses -1 for a regular tab and a non-negative ID for native pairs. */
 export function splitViewIdOf(tab: chrome.tabs.Tab): number | null {
   const splitViewId = (tab as SplitAwareTab).splitViewId;
