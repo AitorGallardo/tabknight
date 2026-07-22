@@ -1620,7 +1620,7 @@ export function TabPreviewView({
           <Kbd>esc</Kbd> {query !== "" ? "Clear" : "Close"}
         </span>
         <span className="flex items-center gap-1.5"><Kbd>&gt;</Kbd> Commands</span>
-        <span className="flex items-center gap-1.5"><Kbd>⌘⌥\\</Kbd> Chrome Split View</span>
+        <span className="flex items-center gap-1.5"><Kbd>⌘⌥\</Kbd> Chrome Split View</span>
         {selectedCommandTarget?.splitViewId !== null && selectedCommandTarget?.splitViewId !== undefined && (
           <span className="flex items-center gap-1.5"><Kbd>⌘⌥U</Kbd> Unsplit</span>
         )}
