@@ -27,6 +27,7 @@ const panelClass =
 
 export function OptionsView() {
   const [shortcut, setShortcut] = useState<string | null>(null);
+  const [fallbackShortcut, setFallbackShortcut] = useState<string | null>(null);
   const [unbound, setUnbound] = useState(false);
   const [stats, setStats] = useState<StorageStats | null>(null);
   const [clearing, setClearing] = useState(false);
@@ -56,11 +57,13 @@ export function OptionsView() {
       try {
         const commands = await chrome.commands.getAll();
         const command = commands.find((c) => c.name === "open_tab_navigator");
+        const fallbackCommand = commands.find((c) => c.name === "open_tab_navigator_fallback");
         if (command?.shortcut) {
           setShortcut(command.shortcut);
         } else {
           setUnbound(true);
         }
+        setFallbackShortcut(fallbackCommand?.shortcut || null);
       } catch {
         setUnbound(true);
       }
@@ -129,16 +132,25 @@ export function OptionsView() {
             Shortcut
           </div>
           <p className="mt-2 text-xs text-white/55">
-            Opens the tab-preview overlay (Cmd+K) on the page you&apos;re viewing.
+            Opens the tab-preview overlay. Use the fallback when Chrome&apos;s address bar or tab strip has keyboard focus.
           </p>
-          <div className="mt-3 flex items-center justify-between">
-            {unbound ? (
-              <span className="text-sm text-white/70">No shortcut set</span>
-            ) : (
-              <kbd className="rounded-md bg-white/[0.08] px-2 py-1 text-sm text-white/85">
-                {shortcut}
-              </kbd>
-            )}
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              {unbound ? (
+                <span className="text-sm text-white/70">No page shortcut set</span>
+              ) : (
+                <span className="flex items-center gap-1.5 text-[11px] text-white/45">
+                  Page
+                  <kbd className="rounded-md bg-white/[0.08] px-2 py-1 text-sm text-white/85">{shortcut}</kbd>
+                </span>
+              )}
+              {fallbackShortcut && (
+                <span className="flex items-center gap-1.5 text-[11px] text-white/45">
+                  Chrome controls
+                  <kbd className="rounded-md bg-white/[0.08] px-2 py-1 text-sm text-white/85">{fallbackShortcut}</kbd>
+                </span>
+              )}
+            </div>
             <button
               type="button"
               onClick={openShortcutsPage}

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  groupCompleteSplitPairs,
   separateNativeSplit,
   isNavigatorTabCandidate,
   splitPartnerTitles,
@@ -75,6 +76,18 @@ function fakeApi(initial: SplitAwareTab[]) {
 }
 
 describe("native Split View metadata", () => {
+  test("places both members of every complete split together without changing pair order", () => {
+    const tabs = [
+      tab(1, 0),
+      tab(2, 1, { splitViewId: 8 }),
+      tab(3, 2),
+      tab(4, 3, { splitViewId: 8 }),
+      tab(5, 4, { splitViewId: 9 }),
+    ];
+
+    expect(groupCompleteSplitPairs(tabs).map((item) => item.id)).toEqual([1, 2, 4, 3, 5]);
+  });
+
   test("maps both members to the other tab's title", () => {
     const tabs = [tab(1, 0, { splitViewId: 8 }), tab(2, 1, { splitViewId: 8 }), tab(3, 2)];
     expect([...splitPartnerTitles(tabs).entries()]).toEqual([

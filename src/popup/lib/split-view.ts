@@ -62,6 +62,37 @@ export function splitPartnerTitles(tabs: chrome.tabs.Tab[]): Map<number, string>
   return result;
 }
 
+/** Keep both members of every complete native split adjacent, preserving the first member's rank. */
+export function groupCompleteSplitPairs<T extends { splitViewId?: number | null }>(tabs: readonly T[]): T[] {
+  const membersBySplit = new Map<number, T[]>();
+  for (const tab of tabs) {
+    const splitId = tab.splitViewId;
+    if (typeof splitId !== "number" || splitId === SPLIT_VIEW_ID_NONE) continue;
+    const members = membersBySplit.get(splitId) ?? [];
+    members.push(tab);
+    membersBySplit.set(splitId, members);
+  }
+
+  const emitted = new Set<number>();
+  const grouped: T[] = [];
+  for (const tab of tabs) {
+    const splitId = tab.splitViewId;
+    if (typeof splitId !== "number" || splitId === SPLIT_VIEW_ID_NONE) {
+      grouped.push(tab);
+      continue;
+    }
+    const pair = membersBySplit.get(splitId);
+    if (!pair || pair.length !== 2) {
+      grouped.push(tab);
+      continue;
+    }
+    if (emitted.has(splitId)) continue;
+    emitted.add(splitId);
+    grouped.push(...pair);
+  }
+  return grouped;
+}
+
 /**
  * Separate a native Chrome Split View without closing either page.
  *

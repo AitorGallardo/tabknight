@@ -24,7 +24,7 @@ import { scoreTab } from "../lib/rank";
 import { rankIntentResults } from "../lib/intent-search";
 import type { IntentBookmark, IntentHistoryEntry, IntentResult } from "../lib/intent-search";
 import { useListNavigation } from "../hooks/useListNavigation";
-import { isNavigatorTabCandidate, separateNativeSplit, splitPartnerTitles, splitViewIdOf } from "../lib/split-view";
+import { groupCompleteSplitPairs, isNavigatorTabCandidate, separateNativeSplit, splitPartnerTitles, splitViewIdOf } from "../lib/split-view";
 import {
   DEFAULT_PREVIEW_TEXT_PREFERENCE,
   PREVIEW_TEXT_PREFERENCE_KEY,
@@ -745,10 +745,13 @@ export function TabPreviewView({
   // Single ordered array driving both rendering and keyboard nav: featured
   // Recent rows, then Most visited, then the bucketed remainder — exactly the
   // visual order. Falls back to the flat ranked list while searching.
-  const orderedTabs = useMemo(
-    () => (featured ? [...featured.recent, ...featured.mostVisited, ...featured.remainder] : rankedTabs),
-    [featured, rankedTabs]
-  );
+  const orderedTabs = useMemo(() => {
+    const ungrouped = featured ? [...featured.recent, ...featured.mostVisited, ...featured.remainder] : rankedTabs;
+    // Keep each native split's two pages adjacent. This makes the visual
+    // half-and-half row match the keyboard order instead of creating a row
+    // whose two focus targets live at unrelated positions in the list.
+    return groupCompleteSplitPairs(ungrouped);
+  }, [featured, rankedTabs]);
   const intentResults = useMemo(
     () =>
       rankIntentResults({
@@ -769,6 +772,21 @@ export function TabPreviewView({
         : orderedTabs.filter((tab) => tab.splitViewId === currentSplitViewId).length,
     [orderedTabs, currentSplitViewId]
   );
+  const splitPairEntriesByTabId = useMemo(() => {
+    const bySplitId = new Map<number, Array<{ tab: NavigatorTab; index: number }>>();
+    orderedTabs.forEach((tab, index) => {
+      if (tab.splitViewId === null || tab.splitViewId === undefined) return;
+      const entries = bySplitId.get(tab.splitViewId) ?? [];
+      entries.push({ tab, index });
+      bySplitId.set(tab.splitViewId, entries);
+    });
+    const byTabId = new Map<number, Array<{ tab: NavigatorTab; index: number }>>();
+    for (const entries of bySplitId.values()) {
+      if (entries.length !== 2) continue;
+      for (const { tab } of entries) byTabId.set(tab.id, entries);
+    }
+    return byTabId;
+  }, [orderedTabs]);
 
   // Rows sharing a title (e.g. several GitHub PRs, several Google Docs) get a
   // domain hint appended so they stay distinguishable at a glance.
@@ -1963,6 +1981,90 @@ export function TabPreviewView({
               {!loading && !query.trim() &&
                 orderedTabs.map((tab, index) => {
                   const resultIndex = commandResults.length + index;
+                  const splitPairEntries = splitPairEntriesByTabId.get(tab.id);
+                  const splitPairStart = splitPairEntries?.[0];
+                  const splitPairEnd = splitPairEntries?.[1];
+                  if (splitPairEnd && index === splitPairEnd.index) return null;
+                  if (splitPairStart && splitPairEnd && index === splitPairStart.index) {
+                    const isCurrentPair = currentSplitViewId !== null && tab.splitViewId === currentSplitViewId;
+                    const inRecentSection = index < featuredRecentCount;
+                    const inMostVisitedSection =
+                      !inRecentSection && index < featuredRecentCount + featuredMostVisitedCount;
+                    let pairHeader: string | null = null;
+                    if (isCurrentPair) {
+                      pairHeader = "Current split view";
+                    } else if (showBuckets && inRecentSection && index === 0) {
+                      pairHeader = "Recent";
+                    } else if (showBuckets && inMostVisitedSection && index === featuredRecentCount) {
+                      pairHeader = "Most visited";
+                    } else if (!inRecentSection && !inMostVisitedSection) {
+                      const bucket = bucketLabel(tab.lastAccessed, now);
+                      if (showBuckets && bucket !== lastBucket) pairHeader = bucket;
+                      if (showBuckets) lastBucket = bucket;
+                    }
+                    const pairActive = [splitPairStart.index, splitPairEnd.index].some(
+                      (pairIndex) => commandResults.length + pairIndex === activeIndex
+                    );
+                    return (
+                      <div key={`split:${tab.splitViewId}`}>
+                        {pairHeader && (
+                          <div className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-black/40 dark:text-white/30">
+                            {pairHeader}
+                          </div>
+                        )}
+                        <div
+                          className={`group/split relative grid grid-cols-2 overflow-hidden rounded-[10px] border transition-colors duration-100 ${
+                            pairActive
+                              ? "border-[#0a84ff]/70 bg-[#0057b8] ring-2 ring-inset ring-white/45 shadow-sm dark:bg-[#0a84ff]"
+                              : "border-black/[0.08] bg-[#0068d9]/[0.07] hover:bg-[#0068d9]/[0.12] dark:border-white/[0.09] dark:bg-white/[0.045] dark:hover:bg-white/[0.07]"
+                          }`}
+                          aria-label={isCurrentPair ? "Current split view" : "Split view pair"}
+                        >
+                          {[splitPairStart, splitPairEnd].map(({ tab: pairTab, index: pairIndex }, side) => {
+                            const pairResultIndex = commandResults.length + pairIndex;
+                            const halfActive = pairResultIndex === activeIndex;
+                            return (
+                              <button
+                                key={pairTab.id}
+                                ref={registerItem(pairResultIndex)}
+                                id={resultDomId({ kind: "intent", id: `tab:${pairTab.id}`, intent: { type: "tab", key: `tab:${pairTab.id}`, sourceLabel: "Open tab", actionLabel: "Switch to tab", score: 0, tab: pairTab } })}
+                                role="option"
+                                aria-selected={halfActive}
+                                aria-label={`${pairTab.title}. ${pairTab.isOrigin ? "Current side of split view. " : "Other side of split view. "}Enter to focus.`}
+                                type="button"
+                                onMouseEnter={() => setActiveIndex(pairResultIndex)}
+                                onClick={() => void activate(pairTab)}
+                                className={`flex min-w-0 items-center gap-2 px-2 py-2 text-left transition-colors duration-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-inset focus-visible:ring-white/75 ${
+                                  side === 1 ? "border-l border-black/10 dark:border-white/15" : ""
+                                } ${halfActive ? "text-white" : pairActive ? "text-white/78" : "text-black/75 dark:text-white/75"} ${
+                                  pairTab.discarded ? "opacity-[0.55]" : ""
+                                }`}
+                              >
+                                <span className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${pairActive ? "bg-white/20" : "bg-white/[0.10]"}`}>
+                                  <Favicon pageUrl={pairTab.url} favIconUrl={pairTab.favIconUrl} size={24} className="h-full w-full" />
+                                </span>
+                                <span className="min-w-0 flex-1 pr-3">
+                                  <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">{pairTab.title}</span>
+                                  <span className={`block truncate text-[10px] ${pairActive ? "text-white/65" : "text-black/45 dark:text-white/40"}`}>
+                                    {pairTab.isOrigin ? "Current side" : domainOf(pairTab.url)}
+                                  </span>
+                                </span>
+                              </button>
+                            );
+                          })}
+                          <span
+                            aria-hidden="true"
+                            className={`pointer-events-none absolute bottom-1 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-md border border-white/20 bg-[#111318]/90 px-1.5 py-0.5 text-[9px] font-medium text-white shadow-sm backdrop-blur-sm transition-opacity duration-100 motion-reduce:transition-none ${
+                              pairActive ? "opacity-100" : "opacity-0 group-hover/split:opacity-100"
+                            }`}
+                          >
+                            <span>⌘⌥U</span>
+                            <span className="text-white/60">Unsplit</span>
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  }
                   const inRecentSection = index < featuredRecentCount;
                   const inMostVisitedSection =
                     !inRecentSection && index < featuredRecentCount + featuredMostVisitedCount;

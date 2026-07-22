@@ -675,10 +675,10 @@ async function handleNavigatorCommand(activeTab: chrome.tabs.Tab): Promise<void>
   await markCmdKHintDismissed();
 }
 
-// Cmd+K — serialize each focused window so rapid presses cannot race hosts or
-// create multiple fallbacks. Other windows remain independent.
+// Both palette shortcuts share one serialized path per focused window, so
+// rapid presses cannot race hosts or create multiple fallbacks.
 chrome.commands.onCommand.addListener(async (command) => {
-  if (command !== "open_tab_navigator") return;
+  if (command !== "open_tab_navigator" && command !== "open_tab_navigator_fallback") return;
   try {
     const [activeTab] = await chrome.tabs.query({
       active: true,

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TabKnight",
-  "version": "0.32.1",
+  "version": "0.33.0",
   "description": "Keyboard-first tab switcher: press one shortcut to search, preview, and jump between tabs in every window. All data stays local.",
   "permissions": [
     "tabs",
@@ -34,6 +34,13 @@
         "mac": "Command+K"
       },
       "description": "Open TabKnight tab preview"
+    },
+    "open_tab_navigator_fallback": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Space",
+        "mac": "Command+Shift+K"
+      },
+      "description": "Open TabKnight when Chrome controls have focus"
     }
   },
   "options_ui": {
