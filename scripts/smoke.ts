@@ -698,7 +698,11 @@ async function main(): Promise<number> {
                 const input = document.querySelector('[role="combobox"]');
                 const selected = document.querySelector('[role="option"][aria-selected="true"]');
                 input?.focus();
-                return JSON.stringify({ selectedId: selected?.id ?? null, focused: document.activeElement === input });
+                return JSON.stringify({
+                  selectedId: selected?.id ?? null,
+                  focused: document.activeElement === input,
+                  availWidth: screen.availWidth,
+                });
               })()`
             )
           );
@@ -723,45 +727,69 @@ async function main(): Promise<number> {
         modifiers: 5,
       });
 
-      const tiled = await waitFor(
-        async () => {
-          const state = JSON.parse(
-            await evaluate(
-              sw,
-              `(async () => {
-                const origin = await chrome.tabs.get(${sideBySideSetup.originId});
-                const selected = await chrome.tabs.get(${sideBySideSetup.selectedId});
-                if (origin.windowId === selected.windowId) return JSON.stringify({ tiled: false });
-                const [left, right] = await Promise.all([
-                  chrome.windows.get(origin.windowId),
-                  chrome.windows.get(selected.windowId),
-                ]);
-                return JSON.stringify({
-                  tiled: true,
-                  originActive: origin.active,
-                  selectedActive: selected.active,
-                  selectedFocused: right.focused,
-                  left: { left: left.left, top: left.top, width: left.width, height: left.height },
-                  right: { left: right.left, top: right.top, width: right.width, height: right.height },
-                });
-              })()`
-            )
-          );
-          return state.tiled ? state : null;
-        },
-        { timeoutMs: 5000, intervalMs: 100, label: "two tiled Chrome windows" }
-      );
-      if (!tiled.originActive || !tiled.selectedActive || !tiled.selectedFocused) {
-        throw new Error(`paired tabs were not active/focused: ${JSON.stringify(tiled)}`);
-      }
-      if (tiled.left.left + tiled.left.width > tiled.right.left || tiled.left.height !== tiled.right.height) {
-        throw new Error(`windows were not tiled side by side: ${JSON.stringify(tiled)}`);
+      if (sideBySideInitial.availWidth < 1008) {
+        const narrowFailure = await waitFor(
+          async () => {
+            const announcement = await evaluate(
+              sideBySideCdp,
+              `document.querySelector('[role="status"]')?.textContent ?? ""`
+            );
+            return announcement.includes("display is too narrow") ? announcement : null;
+          },
+          { timeoutMs: 3000, intervalMs: 100, label: "safe narrow-display rejection" }
+        );
+        const sameWindow = await evaluate(
+          sw,
+          `(async () => {
+            const origin = await chrome.tabs.get(${sideBySideSetup.originId});
+            const selected = await chrome.tabs.get(${sideBySideSetup.selectedId});
+            return origin.windowId === selected.windowId;
+          })()`
+        );
+        if (!sameWindow || !narrowFailure) throw new Error("narrow display left a partial layout");
+      } else {
+        const tiled = await waitFor(
+          async () => {
+            const state = JSON.parse(
+              await evaluate(
+                sw,
+                `(async () => {
+                  const origin = await chrome.tabs.get(${sideBySideSetup.originId});
+                  const selected = await chrome.tabs.get(${sideBySideSetup.selectedId});
+                  if (origin.windowId === selected.windowId) return JSON.stringify({ tiled: false });
+                  const [left, right] = await Promise.all([
+                    chrome.windows.get(origin.windowId),
+                    chrome.windows.get(selected.windowId),
+                  ]);
+                  return JSON.stringify({
+                    tiled: true,
+                    originActive: origin.active,
+                    selectedActive: selected.active,
+                    selectedFocused: right.focused,
+                    left: { left: left.left, top: left.top, width: left.width, height: left.height },
+                    right: { left: right.left, top: right.top, width: right.width, height: right.height },
+                  });
+                })()`
+              )
+            );
+            return state.tiled && state.originActive && state.selectedActive && state.selectedFocused
+              ? state
+              : null;
+          },
+          { timeoutMs: 5000, intervalMs: 100, label: "two tiled Chrome windows" }
+        );
+        if (!tiled.originActive || !tiled.selectedActive || !tiled.selectedFocused) {
+          throw new Error(`paired tabs were not active/focused: ${JSON.stringify(tiled)}`);
+        }
+        if (tiled.left.left + tiled.left.width > tiled.right.left || tiled.left.height !== tiled.right.height) {
+          throw new Error(`windows were not tiled side by side: ${JSON.stringify(tiled)}`);
+        }
       }
       sideBySideCdp.close();
-      results.push({ name: "Cmd+Option+/ tiles highlighted tab beside current tab", ok: true });
+      results.push({ name: "Cmd+Option+/ tiles or safely rejects a narrow display", ok: true });
     } catch (err) {
       results.push({
-        name: "Cmd+Option+/ tiles highlighted tab beside current tab",
+        name: "Cmd+Option+/ tiles or safely rejects a narrow display",
         ok: false,
         error: (err as Error).message,
       });
