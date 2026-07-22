@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode, SyntheticEvent } from "react";
-import { AppWindow, Bookmark, Clock3, Command, EyeOff, Globe2, Moon, Music, Pause, Pin, Play, Search, Volume2, VolumeX, X } from "lucide-react";
+import { AppWindow, Bookmark, Clock3, Columns2, Command, EyeOff, Globe2, Moon, Music, Pause, Pin, Play, Search, Volume2, VolumeX, X } from "lucide-react";
 import { activateTab, getAllTabs, openUrlAsTab, searchBookmarks, searchHistory, setTabMuted } from "../lib/chrome-api";
 import { executeBrowserCommand } from "../lib/browser-command-executor";
 import { findBrowserCommands, getBrowserCommand, listBrowserCommands } from "../lib/browser-commands";
@@ -22,6 +22,7 @@ import { Kbd } from "../components/Kbd";
 import { ResultLabels } from "../components/ResultLabels";
 import { scoreTab } from "../lib/rank";
 import { rankIntentResults } from "../lib/intent-search";
+import { openTabSideBySide } from "../lib/side-by-side";
 import type { IntentBookmark, IntentHistoryEntry, IntentResult } from "../lib/intent-search";
 import { useListNavigation } from "../hooks/useListNavigation";
 import {
@@ -92,6 +93,7 @@ interface PlaybackState {
 const PAUSE_DEBOUNCE_MS = 800;
 const HINT_MS = 2500;
 const THUMB_DEBOUNCE_MS = 70;
+const SIDE_BY_SIDE_MOTION_MS = 140;
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -356,6 +358,8 @@ export function TabPreviewView({
   const [currentWindowId, setCurrentWindowId] = useState<number | null>(null);
   const [commandTarget, setCommandTarget] = useState<BrowserCommandTab | null>(null);
   const commandInFlightRef = useRef(false);
+  const originTabIdRef = useRef<number | null>(null);
+  const [pairingTabId, setPairingTabId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [intentBookmarks, setIntentBookmarks] = useState<IntentBookmark[]>([]);
   const [intentHistory, setIntentHistory] = useState<IntentHistoryEntry[]>([]);
@@ -477,6 +481,7 @@ export function TabPreviewView({
           : allTabs.find(
               (tab) => tab.active && tab.windowId === currentWindowId && !!tab.url && !tab.url.startsWith(selfUrl)
             );
+      originTabIdRef.current = originTab?.id ?? null;
       setCommandTarget(
         originTab?.id !== undefined
           ? {
@@ -1304,12 +1309,31 @@ export function TabPreviewView({
           setCommandTarget(freshTarget);
         }
 
+        if (command.id === "side-by-side") {
+          setPairingTabId(freshTarget!.id);
+          setAnnouncement(`Placing ${freshTarget!.title} beside the current tab`);
+          if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+            await new Promise<void>((resolve) => setTimeout(resolve, SIDE_BY_SIDE_MOTION_MS));
+          }
+        }
+
         const result = await executeBrowserCommand(command.id, freshTarget, {
           remove: async (tabId) => chrome.tabs.remove(tabId),
           duplicate: async (tabId) => chrome.tabs.duplicate(tabId),
           update: async (tabId, properties) => chrome.tabs.update(tabId, properties),
           reload: async (tabId) => chrome.tabs.reload(tabId),
           create: async (properties) => chrome.tabs.create(properties),
+          openSideBySide: async (tabId) => {
+            const originTabId = originTabIdRef.current;
+            if (originTabId === null) throw new Error("The current tab is no longer available");
+            const display = window.screen as Screen & { availLeft?: number; availTop?: number };
+            await openTabSideBySide(originTabId, tabId, {
+              left: display.availLeft ?? 0,
+              top: display.availTop ?? 0,
+              width: display.availWidth,
+              height: display.availHeight,
+            });
+          },
         });
 
         setAnnouncement(result.announcement);
@@ -1333,6 +1357,7 @@ export function TabPreviewView({
         setAnnouncement("");
         queueMicrotask(() => setAnnouncement(`Command failed: ${detail}`));
       } finally {
+        setPairingTabId(null);
         commandInFlightRef.current = false;
       }
     },
@@ -1467,6 +1492,18 @@ export function TabPreviewView({
       // A held key firing repeat events would otherwise flap mode (remount
       // flicker on Tab) or race toggles (Space); consume without acting.
       if (event.repeat) return true;
+      if (
+        mode === "tabs" &&
+        event.metaKey &&
+        event.altKey &&
+        !event.ctrlKey &&
+        event.code === "Slash"
+      ) {
+        event.preventDefault();
+        const command = getBrowserCommand("side-by-side", { targetTab: selectedCommandTarget });
+        if (command) void runCommand(command, selectedCommandTarget);
+        return true;
+      }
       if (mode === "tabs" && fromSearch && event.altKey && !event.metaKey && !event.ctrlKey) {
         const commandId =
           event.code === "KeyP"
@@ -1557,6 +1594,7 @@ export function TabPreviewView({
           <Kbd>esc</Kbd> {query !== "" ? "Clear" : "Close"}
         </span>
         <span className="flex items-center gap-1.5"><Kbd>&gt;</Kbd> Commands</span>
+        <span className="flex items-center gap-1.5"><Kbd>⌘⌥/</Kbd> Side by side</span>
         <span className="flex items-center gap-1.5"><Kbd>⌥</Kbd> Quick actions</span>
       </div>
     );
@@ -1832,7 +1870,7 @@ export function TabPreviewView({
                       type="button"
                       onMouseEnter={() => setActiveIndex(resultIndex)}
                       onClick={() => void executeIntent(item)}
-                      className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${
+                      className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${item.type === "tab" && pairingTabId === item.tab.id ? "tk-pairing" : ""} ${
                         active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]"
                       }`}
                     >
@@ -1847,9 +1885,13 @@ export function TabPreviewView({
                           {domainOf(url)}
                         </span>
                       </span>
-                      <span className={`shrink-0 text-[10px] font-medium ${active ? "text-white/80" : "text-white/40"}`}>
-                        {item.sourceLabel}
-                      </span>
+                      {item.type === "tab" && pairingTabId === item.tab.id ? (
+                        <Columns2 className="h-3.5 w-3.5 shrink-0 text-white" aria-hidden="true" />
+                      ) : (
+                        <span className={`shrink-0 text-[10px] font-medium ${active ? "text-white/80" : "text-white/40"}`}>
+                          {item.sourceLabel}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
@@ -1906,7 +1948,7 @@ export function TabPreviewView({
                           ...(showEntrance ? { animationDelay: `${index * 18}ms` } : undefined),
                         }}
                         aria-label={`${tab.title}. Open tab. Switch.${tab.pinned ? " Pinned." : ""}${tab.audible ? " Playing audio." : ""}${tab.muted ? " Muted." : ""}${tab.discarded ? " Discarded." : ""}`}
-                        className={`flex w-full items-center gap-2 rounded-[9px] px-2 py-1 text-left transition-colors duration-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/70 ${showEntrance ? "tk-row-in" : ""} ${
+                        className={`flex w-full items-center gap-2 rounded-[9px] px-2 py-1 text-left transition-colors duration-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/70 ${showEntrance ? "tk-row-in" : ""} ${pairingTabId === tab.id ? "tk-pairing" : ""} ${
                           active
                             ? "bg-[#0057b8] text-white ring-2 ring-inset ring-white/55 shadow-sm dark:bg-[#0a84ff]"
                             : isFeatured
@@ -1931,7 +1973,11 @@ export function TabPreviewView({
                             </span>
                           )}
                         </span>
-                        <ResultLabels active={active} />
+                        {pairingTabId === tab.id ? (
+                          <Columns2 className="h-3.5 w-3.5 shrink-0 text-white" aria-hidden="true" />
+                        ) : (
+                          <ResultLabels active={active} />
+                        )}
                         <RowGlyphs tab={tab} currentWindowId={currentWindowId} active={active} />
                       </button>
                     </div>

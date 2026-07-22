@@ -8,12 +8,13 @@
  *   1. The preview overlay injects exactly once and focuses its frame.
  *   2. Responsive light/dark, wide/narrow, and accessibility contracts hold.
  *   3. Palette starts at the newest tab and Alt/Option+W closes that selection.
- *   4. Host-page spoofed lifecycle messages are ignored.
- *   5. Popup and standalone sizing stay within their viewports.
- *   6. Universal intent search renders all available typed sources.
- *   7. The privacy options page loads with rich page text enabled by default.
- *   8. The overlay closes cleanly.
- *   9. A restricted-page fallback explains itself, focuses search, and Escape
+ *   4. Cmd+Option+/ moves the highlighted tab into a tiled second window.
+ *   5. Host-page spoofed lifecycle messages are ignored.
+ *   6. Popup and standalone sizing stay within their viewports.
+ *   7. Universal intent search renders all available typed sources.
+ *   8. The privacy options page loads with rich page text enabled by default.
+ *   9. The overlay closes cleanly.
+ *   10. A restricted-page fallback explains itself, focuses search, and Escape
  *      closes it while restoring the origin tab.
  *
  * Chrome >= 137 (stable) ignores --load-extension, so the extension is loaded
@@ -239,6 +240,7 @@ async function main(): Promise<number> {
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-features=ChromeWhatsNewUI",
+    "--window-size=1440,900",
   ];
 
   let proc: ReturnType<typeof Bun.spawn> | undefined;
@@ -302,13 +304,15 @@ async function main(): Promise<number> {
   try {
     // Try headless=new first (CI-friendly); fall back to headful once if the
     // extension/page targets never come up.
-    mode = "--headless=new";
-    proc = launch(true);
+    const forceHeadful = process.env.TABKNIGHT_SMOKE_HEADFUL === "1";
+    mode = forceHeadful ? "headful" : "--headless=new";
+    proc = launch(!forceHeadful);
 
     let targets: Awaited<ReturnType<typeof setUp>>;
     try {
       targets = await setUp();
     } catch (headlessErr) {
+      if (forceHeadful) throw headlessErr;
       console.log(
         `headless=new setup failed (${(headlessErr as Error).message}); retrying headful...`
       );
@@ -640,7 +644,130 @@ async function main(): Promise<number> {
       });
     }
 
-    /* -------------------- TEST 2: forged lifecycle ignored -------------------- */
+    /* ---------------- TEST 4: one-step side-by-side windows ---------------- */
+    try {
+      const sideBySideSetup = JSON.parse(
+        await evaluate(
+          sw,
+          `(async () => {
+            const [origin] = await chrome.tabs.query({ url: "${testUrl}" });
+            await chrome.tabs.update(origin.id, { active: true });
+            const selected = await chrome.tabs.create({
+              windowId: origin.windowId,
+              url: "${testUrl}?side-by-side-selected=1",
+              active: false,
+            });
+            const contextId = "preview-side-by-side-smoke";
+            const paletteUrl = chrome.runtime.getURL("popup/index.html?standalone=1&context=" + contextId);
+            await chrome.storage.local.set({
+              [contextId]: {
+                returnToTabId: origin.id,
+                returnToWindowId: origin.windowId,
+                createdAt: Date.now(),
+              },
+            });
+            const palette = await chrome.tabs.create({
+              windowId: origin.windowId,
+              url: paletteUrl,
+              active: true,
+            });
+            return JSON.stringify({
+              originId: origin.id,
+              selectedId: selected.id,
+              paletteUrl,
+            });
+          })()`
+        )
+      );
+      const sideBySideTarget = await waitFor(
+        async () => {
+          const list = await jsonList(port);
+          return list.find((target) => target.type === "page" && target.url === sideBySideSetup.paletteUrl);
+        },
+        { timeoutMs: 5000, intervalMs: 100, label: "side-by-side palette target" }
+      );
+      if (!sideBySideTarget.webSocketDebuggerUrl) throw new Error("side-by-side target has no debugger URL");
+      const sideBySideCdp = new CDP(sideBySideTarget.webSocketDebuggerUrl);
+      await sideBySideCdp.send("Runtime.enable");
+      const sideBySideInitial = await waitFor(
+        async () => {
+          const state = JSON.parse(
+            await evaluate(
+              sideBySideCdp,
+              `(() => {
+                const input = document.querySelector('[role="combobox"]');
+                const selected = document.querySelector('[role="option"][aria-selected="true"]');
+                input?.focus();
+                return JSON.stringify({ selectedId: selected?.id ?? null, focused: document.activeElement === input });
+              })()`
+            )
+          );
+          return state.selectedId ? state : null;
+        },
+        { timeoutMs: 5000, intervalMs: 100, label: "side-by-side highlighted target" }
+      );
+      if (sideBySideInitial.selectedId !== `tk-result-tab-${sideBySideSetup.selectedId}` || !sideBySideInitial.focused) {
+        throw new Error(`wrong side-by-side target: ${JSON.stringify(sideBySideInitial)}`);
+      }
+
+      await sideBySideCdp.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key: "/",
+        code: "Slash",
+        modifiers: 5,
+      });
+      await sideBySideCdp.send("Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: "/",
+        code: "Slash",
+        modifiers: 5,
+      });
+
+      const tiled = await waitFor(
+        async () => {
+          const state = JSON.parse(
+            await evaluate(
+              sw,
+              `(async () => {
+                const origin = await chrome.tabs.get(${sideBySideSetup.originId});
+                const selected = await chrome.tabs.get(${sideBySideSetup.selectedId});
+                if (origin.windowId === selected.windowId) return JSON.stringify({ tiled: false });
+                const [left, right] = await Promise.all([
+                  chrome.windows.get(origin.windowId),
+                  chrome.windows.get(selected.windowId),
+                ]);
+                return JSON.stringify({
+                  tiled: true,
+                  originActive: origin.active,
+                  selectedActive: selected.active,
+                  selectedFocused: right.focused,
+                  left: { left: left.left, top: left.top, width: left.width, height: left.height },
+                  right: { left: right.left, top: right.top, width: right.width, height: right.height },
+                });
+              })()`
+            )
+          );
+          return state.tiled ? state : null;
+        },
+        { timeoutMs: 5000, intervalMs: 100, label: "two tiled Chrome windows" }
+      );
+      if (!tiled.originActive || !tiled.selectedActive || !tiled.selectedFocused) {
+        throw new Error(`paired tabs were not active/focused: ${JSON.stringify(tiled)}`);
+      }
+      if (tiled.left.left + tiled.left.width > tiled.right.left || tiled.left.height !== tiled.right.height) {
+        throw new Error(`windows were not tiled side by side: ${JSON.stringify(tiled)}`);
+      }
+      sideBySideCdp.close();
+      results.push({ name: "Cmd+Option+/ tiles highlighted tab beside current tab", ok: true });
+    } catch (err) {
+      results.push({
+        name: "Cmd+Option+/ tiles highlighted tab beside current tab",
+        ok: false,
+        error: (err as Error).message,
+      });
+    }
+
+    /* -------------------- TEST 5: forged lifecycle ignored -------------------- */
     try {
       await evaluate(
         page,
@@ -906,7 +1033,7 @@ async function main(): Promise<number> {
   console.log("");
   console.log(`mode: ${mode}, runtime: ${(runtimeMs / 1000).toFixed(1)}s`);
 
-  const allPassed = results.length === 9 && results.every((r) => r.ok);
+  const allPassed = results.length === 10 && results.every((r) => r.ok);
   return allPassed ? 0 : 1;
 }
 

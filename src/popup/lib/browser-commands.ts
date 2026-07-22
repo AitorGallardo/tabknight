@@ -6,6 +6,7 @@ export type BrowserCommandId =
   | "mute-tab"
   | "unmute-tab"
   | "reload-tab"
+  | "side-by-side"
   | "new-tab";
 
 export interface BrowserCommandTab {
@@ -94,6 +95,15 @@ const COMMANDS: readonly CommandDefinition[] = [
     description: "Refresh the highlighted tab",
     shortcut: "⌥R / Alt+R",
     keywords: ["reload", "reload tab", "refresh", "selected tab"],
+    available: ({ targetTab }) => targetTab !== null,
+  },
+  {
+    id: "side-by-side",
+    label: "Open Selected Tab Side by Side",
+    actionLabel: "Open Side by Side",
+    description: "Move the highlighted tab into a Chrome window tiled beside the current tab",
+    shortcut: "⌘⌥/",
+    keywords: ["side by side", "split view", "split", "tile", "two windows", "selected tab"],
     available: ({ targetTab }) => targetTab !== null,
   },
   {
