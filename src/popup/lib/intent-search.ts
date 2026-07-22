@@ -13,6 +13,8 @@ export interface IntentTab {
   audible?: boolean;
   muted?: boolean;
   discarded?: boolean;
+  splitViewId?: number | null;
+  splitPartnerTitle?: string;
 }
 
 export interface IntentBookmark {

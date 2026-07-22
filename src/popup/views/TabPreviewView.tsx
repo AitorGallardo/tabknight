@@ -24,6 +24,7 @@ import { scoreTab } from "../lib/rank";
 import { rankIntentResults } from "../lib/intent-search";
 import type { IntentBookmark, IntentHistoryEntry, IntentResult } from "../lib/intent-search";
 import { useListNavigation } from "../hooks/useListNavigation";
+import { separateNativeSplit, splitPartnerTitles, splitViewIdOf } from "../lib/split-view";
 import {
   DEFAULT_PREVIEW_TEXT_PREFERENCE,
   PREVIEW_TEXT_PREFERENCE_KEY,
@@ -63,6 +64,8 @@ interface NavigatorTab {
   audible?: boolean;
   muted?: boolean;
   discarded?: boolean;
+  splitViewId?: number | null;
+  splitPartnerTitle?: string;
 }
 
 function commandTargetForTab(tab: NavigatorTab): BrowserCommandTab {
@@ -71,6 +74,7 @@ function commandTargetForTab(tab: NavigatorTab): BrowserCommandTab {
     title: tab.title,
     pinned: tab.pinned,
     muted: tab.muted,
+    splitViewId: tab.splitViewId ?? null,
   };
 }
 
@@ -488,10 +492,12 @@ export function TabPreviewView({
               title: originTab.title || originTab.url || "Current tab",
               pinned: !!originTab.pinned,
               muted: !!originTab.mutedInfo?.muted,
+              splitViewId: splitViewIdOf(originTab),
             }
           : null
       );
 
+      const partnerTitles = splitPartnerTitles(allTabs);
       const normalized = allTabs
         .filter(
           (tab): tab is chrome.tabs.Tab & { id: number; windowId: number; url: string } =>
@@ -514,6 +520,8 @@ export function TabPreviewView({
           audible: tab.audible || false,
           muted: tab.mutedInfo?.muted || false,
           discarded: tab.discarded || false,
+          splitViewId: splitViewIdOf(tab),
+          splitPartnerTitle: partnerTitles.get(tab.id),
         }));
 
       setTabs(normalized);
@@ -852,11 +860,14 @@ export function TabPreviewView({
     if (mode !== "tabs" || !activeTabItem) return;
     const next = commandTargetForTab(activeTabItem);
     setCommandTarget((current) =>
-      current?.id === next.id && current.pinned === next.pinned && current.muted === next.muted
+      current?.id === next.id &&
+      current.pinned === next.pinned &&
+      current.muted === next.muted &&
+      current.splitViewId === next.splitViewId
         ? current
         : next
     );
-  }, [mode, activeTabItem?.id, activeTabItem?.pinned, activeTabItem?.muted]);
+  }, [mode, activeTabItem?.id, activeTabItem?.pinned, activeTabItem?.muted, activeTabItem?.splitViewId]);
   const availableCommands = useMemo(
     () => (mode === "tabs" ? listBrowserCommands({ targetTab: selectedCommandTarget }) : []),
     [mode, selectedCommandTarget]
@@ -1304,6 +1315,7 @@ export function TabPreviewView({
             title: tab.title || tab.url || "Current tab",
             pinned: !!tab.pinned,
             muted: !!tab.mutedInfo?.muted,
+            splitViewId: splitViewIdOf(tab),
           };
           setCommandTarget(freshTarget);
         }
@@ -1334,6 +1346,7 @@ export function TabPreviewView({
                 .catch(() => {});
             }
           },
+          separateSplit: separateNativeSplit,
         });
 
         setAnnouncement(result.announcement);
@@ -1504,6 +1517,19 @@ export function TabPreviewView({
         if (command) void runCommand(command, selectedCommandTarget);
         return true;
       }
+      if (
+        mode === "tabs" &&
+        (event.metaKey || event.ctrlKey) &&
+        event.altKey &&
+        event.code === "KeyU"
+      ) {
+        const command = getBrowserCommand("separate-split-view", { targetTab: selectedCommandTarget });
+        if (command) {
+          event.preventDefault();
+          void runCommand(command, selectedCommandTarget);
+          return true;
+        }
+      }
       if (mode === "tabs" && fromSearch && event.altKey && !event.metaKey && !event.ctrlKey) {
         const commandId =
           event.code === "KeyP"
@@ -1594,7 +1620,10 @@ export function TabPreviewView({
           <Kbd>esc</Kbd> {query !== "" ? "Clear" : "Close"}
         </span>
         <span className="flex items-center gap-1.5"><Kbd>&gt;</Kbd> Commands</span>
-        <span className="flex items-center gap-1.5"><Kbd>⌘⌥/</Kbd> Chrome Split View</span>
+        <span className="flex items-center gap-1.5"><Kbd>⌘⌥\\</Kbd> Chrome Split View</span>
+        {selectedCommandTarget?.splitViewId !== null && selectedCommandTarget?.splitViewId !== undefined && (
+          <span className="flex items-center gap-1.5"><Kbd>⌘⌥U</Kbd> Unsplit</span>
+        )}
         <span className="flex items-center gap-1.5"><Kbd>⌥</Kbd> Quick actions</span>
       </div>
     );
@@ -1883,6 +1912,7 @@ export function TabPreviewView({
                         </span>
                         <span className={`block truncate text-[11px] ${active ? "text-white/70" : "text-white/45"}`}>
                           {domainOf(url)}
+                          {item.type === "tab" && item.tab.splitPartnerTitle ? ` · Split with ${item.tab.splitPartnerTitle}` : ""}
                         </span>
                       </span>
                       {item.type === "tab" && pairingTabId === item.tab.id ? (
@@ -1942,12 +1972,12 @@ export function TabPreviewView({
                           ...(orderedTabs.length > CONTENT_VISIBILITY_THRESHOLD
                             ? {
                                 contentVisibility: "auto",
-                                containIntrinsicSize: isDuplicateTitle ? ROW_CONTAIN_SIZE_DUPLICATE : ROW_CONTAIN_SIZE,
+                                containIntrinsicSize: isDuplicateTitle || tab.splitPartnerTitle ? ROW_CONTAIN_SIZE_DUPLICATE : ROW_CONTAIN_SIZE,
                               }
                             : undefined),
                           ...(showEntrance ? { animationDelay: `${index * 18}ms` } : undefined),
                         }}
-                        aria-label={`${tab.title}. Open tab. Switch.${tab.pinned ? " Pinned." : ""}${tab.audible ? " Playing audio." : ""}${tab.muted ? " Muted." : ""}${tab.discarded ? " Discarded." : ""}`}
+                        aria-label={`${tab.title}. Open tab. Switch.${tab.splitPartnerTitle ? ` Split with ${tab.splitPartnerTitle}.` : ""}${tab.pinned ? " Pinned." : ""}${tab.audible ? " Playing audio." : ""}${tab.muted ? " Muted." : ""}${tab.discarded ? " Discarded." : ""}`}
                         className={`flex w-full items-center gap-2 rounded-[9px] px-2 py-1 text-left transition-colors duration-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/70 ${showEntrance ? "tk-row-in" : ""} ${pairingTabId === tab.id ? "tk-pairing" : ""} ${
                           active
                             ? "bg-[#0057b8] text-white ring-2 ring-inset ring-white/55 shadow-sm dark:bg-[#0a84ff]"
@@ -1967,9 +1997,9 @@ export function TabPreviewView({
                           <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">
                             {highlightTitle(tab.title, query, active)}
                           </span>
-                          {isDuplicateTitle && (
+                          {(isDuplicateTitle || tab.splitPartnerTitle) && (
                             <span className={`block truncate text-[11px] ${active ? "text-white/85" : "text-black/50 dark:text-white/45"}`}>
-                              {domainOf(tab.url)}
+                              {tab.splitPartnerTitle ? `Split with ${tab.splitPartnerTitle}` : domainOf(tab.url)}
                             </span>
                           )}
                         </span>
@@ -2140,6 +2170,12 @@ export function TabPreviewView({
                 {activeTabItem.title}
               </h2>
               <div className="mt-1 truncate text-xs text-black/50 dark:text-white/45">{activeTabItem.url}</div>
+              {activeTabItem.splitPartnerTitle && (
+                <div className="mt-2 inline-flex max-w-full items-center gap-1.5 rounded-md border border-[#0068d9]/20 bg-[#0068d9]/[0.07] px-2 py-1 text-[11px] text-[#0057b8] dark:border-[#0a84ff]/25 dark:bg-[#0a84ff]/10 dark:text-[#70b8ff]">
+                  <Columns2 className="h-3 w-3 shrink-0" />
+                  <span className="truncate">Split with {activeTabItem.splitPartnerTitle}</span>
+                </div>
+              )}
 
               {activeAudioTab && mediaStatus?.tabId === activeAudioTab.id && (
                 <MediaNowPlaying tab={activeAudioTab} status={mediaStatus.result} />

@@ -8,6 +8,7 @@ export interface BrowserCommandApi {
   reload: (tabId: number) => Promise<void>;
   create: (properties: { url: string; active: boolean }) => Promise<unknown>;
   showNativeSplitHint: (tabId: number, title: string) => Promise<void>;
+  separateSplit: (tabId: number) => Promise<unknown>;
 }
 
 export interface BrowserCommandExecution {
@@ -23,6 +24,7 @@ const TARGET_REQUIRED = new Set<BrowserCommandId>([
   "unmute-tab",
   "reload-tab",
   "native-split-view",
+  "separate-split-view",
 ]);
 
 /** Routes one explicit activation to Chrome. Callers own dismissal and failure UI. */
@@ -64,6 +66,9 @@ export async function executeBrowserCommand(
     case "native-split-view":
       await api.showNativeSplitHint(tab.id, tab.title);
       return { announcement: `Continue Chrome Split View with ${tab.title}` };
+    case "separate-split-view":
+      await api.separateSplit(tab.id);
+      return { announcement: `Separated Chrome Split View containing ${tab.title}` };
     case "new-tab":
       await api.create({ url: "chrome://newtab/", active: true });
       return { announcement: "Opened a new tab" };

@@ -8,7 +8,7 @@
  *   1. The preview overlay injects exactly once and focuses its frame.
  *   2. Responsive light/dark, wide/narrow, and accessibility contracts hold.
  *   3. Palette starts at the newest tab and Alt/Option+W closes that selection.
- *   4. Cmd+Option+/ closes the palette and guides Chrome's native Split View
+ *   4. Cmd+Option+\\ closes the palette and guides Chrome's native Split View
  *      without creating or moving any window.
  *   5. Host-page spoofed lifecycle messages are ignored.
  *   6. Popup and standalone sizing stay within their viewports.
@@ -709,13 +709,13 @@ async function main(): Promise<number> {
       await splitGuideCdp.send("Input.dispatchKeyEvent", {
         type: "keyDown",
         key: "/",
-        code: "Slash",
+        code: "Backslash",
         modifiers: 5,
       });
       await splitGuideCdp.send("Input.dispatchKeyEvent", {
         type: "keyUp",
         key: "/",
-        code: "Slash",
+        code: "Backslash",
         modifiers: 5,
       });
 
@@ -759,10 +759,10 @@ async function main(): Promise<number> {
         throw new Error(`Split View guide changed browser windows: ${JSON.stringify(unchanged)}`);
       }
       splitGuideCdp.close();
-      results.push({ name: "Cmd+Option+/ guides native Split View without changing windows", ok: true });
+      results.push({ name: "Cmd+Option+\\ guides native Split View without changing windows", ok: true });
     } catch (err) {
       results.push({
-        name: "Cmd+Option+/ guides native Split View without changing windows",
+        name: "Cmd+Option+\\ guides native Split View without changing windows",
         ok: false,
         error: (err as Error).message,
       });
