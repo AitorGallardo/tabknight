@@ -102,7 +102,7 @@ export function RestoreView({ onBack }: RestoreViewProps) {
       {/* Header */}
       <div className="shrink-0 p-3 border-b border-white/[0.07] space-y-3">
         <div className="flex items-center gap-2">
-          <FolderOpen className="h-4 w-4 text-[#5eaeff]" />
+          <FolderOpen className="h-4 w-4 text-[hsl(var(--tk-accent))]" />
           <h1 className="text-sm font-semibold text-white/90">Restore Session</h1>
         </div>
 

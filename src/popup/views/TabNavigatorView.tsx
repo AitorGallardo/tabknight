@@ -243,7 +243,7 @@ export function TabNavigatorView({
 
   return (
     <div
-      className="flex h-full w-full flex-col text-[#f4f5f8]"
+      className="flex h-full w-full flex-col text-zinc-100"
       onMouseDownCapture={(event) => {
         const target = event.target as HTMLElement | null;
         if (!target || target.closest("button") || target.tagName === "INPUT") return;
@@ -305,7 +305,7 @@ export function TabNavigatorView({
           !error &&
           items.map((item, index) => {
             const active = index === activeIndex;
-            const rowClass = active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]";
+            const rowClass = active ? "bg-[hsl(var(--tk-accent-solid))] text-[hsl(var(--tk-accent-foreground))]" : "text-white/80 hover:bg-white/[0.06]";
             const tileClass = active ? "bg-white/20" : "bg-white/[0.08] text-white/80";
             const subClass = active ? "text-white/70" : "text-white/45";
 

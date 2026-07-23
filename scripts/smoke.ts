@@ -890,15 +890,18 @@ async function main(): Promise<number> {
       await sleep(1000);
       const mounted = await evaluate(
         optionsCdp,
-        `document.getElementById("root")?.children.length > 0 && !!document.querySelector('input[name="preview-text"][value="always-show"]:checked')`
+        `document.getElementById("root")?.children.length > 0
+          && !!document.querySelector('input[name="preview-text"][value="always-show"]:checked')
+          && !!document.querySelector('input[name="accent"][value="zinc"]:checked')
+          && document.documentElement.dataset.accent === "zinc"`
       );
-      if (!mounted) throw new Error("options page #root has no children");
-      results.push({ name: "options page loads and mounts", ok: true });
+      if (!mounted) throw new Error("options page did not mount with rich previews and zinc accent defaults");
+      results.push({ name: "options page loads with zinc accent default", ok: true });
       optionsCdp.close();
       await browser?.send("Target.closeTarget", { targetId: target.id });
     } catch (err) {
       results.push({
-        name: "options page loads and mounts",
+        name: "options page loads with zinc accent default",
         ok: false,
         error: (err as Error).message,
       });

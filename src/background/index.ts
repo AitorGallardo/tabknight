@@ -5,6 +5,7 @@
 //   on restricted pages where a content script can't be injected.
 
 import { updateBadgeCount } from "../popup/lib/chrome-api";
+import { ACCENT_PREFERENCE_KEY } from "../popup/lib/appearance";
 import { getThumbnail, putCard, pruneCards } from "../popup/lib/preview/db";
 import { hashUrl } from "../popup/lib/preview/hash";
 import { captureActiveTabThumbnail, isCapturableUrl } from "../popup/lib/preview/thumbnail";
@@ -606,6 +607,10 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
     .catch(() => {
       // Best-effort — window may have closed between the event and the query.
     });
+});
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === "local" && ACCENT_PREFERENCE_KEY in changes) void updateBadgeCount();
 });
 
 // First-run discoverability: once the user actually uses the shortcut, the

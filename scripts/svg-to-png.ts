@@ -35,10 +35,10 @@ function createColoredPng(size: number): Buffer {
 
   const ihdrChunk = createChunk("IHDR", ihdrData);
 
-  // Create raw pixel data (RGB - indigo color #6366f1)
-  const r = 0x63,
-    g = 0x66,
-    b = 0xf1;
+  // Create raw pixel data (RGB - zinc color #52525b)
+  const r = 0x52,
+    g = 0x52,
+    b = 0x5b;
   const rowSize = 1 + width * 3; // filter byte + RGB pixels
   const rawData = Buffer.alloc(height * rowSize);
 

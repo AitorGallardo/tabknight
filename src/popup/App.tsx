@@ -116,20 +116,20 @@ export function App() {
   if (isStandalonePreview) {
     if (!contextReady) {
       return (
-        <div className="grid min-h-screen place-items-center bg-[#05060a] text-xs text-white/60">
+        <div className="grid min-h-screen place-items-center bg-zinc-950 text-xs text-white/60">
           Preparing TabKnight…
         </div>
       );
     }
     return (
-      <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#05060a] p-4">
+      <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-zinc-950 p-4">
         {standaloneContext?.backgroundImage && (
           <>
             <div
               className="absolute inset-0 scale-105 bg-cover bg-center opacity-45 blur-2xl"
               style={{ backgroundImage: `url(${standaloneContext.backgroundImage})` }}
             />
-            <div className="absolute inset-0 bg-[#05060a]/55" />
+            <div className="absolute inset-0 bg-zinc-950/55" />
           </>
         )}
         <div
@@ -137,7 +137,7 @@ export function App() {
           style={{
             backgroundImage: [
               "radial-gradient(circle at 1px 1px, rgba(255,255,255,0.22) 1px, transparent 0)",
-              "radial-gradient(circle at 1px 1px, rgba(90,120,255,0.12) 1px, transparent 0)",
+              "radial-gradient(circle at 1px 1px, rgba(161,161,170,0.12) 1px, transparent 0)",
             ].join(","),
             backgroundSize: "14px 14px, 22px 22px",
             backgroundPosition: "0 0, 7px 7px",
@@ -146,9 +146,9 @@ export function App() {
               "radial-gradient(circle at center, black 22%, transparent 78%)",
           }}
         />
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(60%_60%_at_50%_50%,transparent,rgba(5,6,10,0.42))]" />
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(60%_60%_at_50%_50%,transparent,rgba(9,9,11,0.46))]" />
         <div className="relative flex h-[min(650px,calc(100dvh-2rem))] min-h-[360px] w-full max-w-[1040px] flex-col">
-          <div className="mb-2 flex h-7 shrink-0 items-center justify-between rounded-lg border border-white/10 bg-black/35 px-2.5 text-[11px] text-white/65 backdrop-blur-xl">
+          <div className="mb-2 flex h-7 shrink-0 items-center justify-between rounded-lg border border-white/10 bg-zinc-900/55 px-2.5 text-[11px] text-white/65 backdrop-blur-xl">
             <span>{fallbackExplanation(standaloneContext?.cause)}</span>
             <span className="text-white/40">Esc returns to your tab</span>
           </div>
@@ -165,7 +165,7 @@ export function App() {
 
   return (
     <div
-      className="flex flex-col overflow-hidden bg-[linear-gradient(180deg,rgba(28,28,30,0.86),rgba(20,20,22,0.84))] text-[#f5f5f7]"
+      className="tk-frozen-glass flex flex-col overflow-hidden text-zinc-50"
       style={{
         width: POPUP_WIDTH,
         height: POPUP_HEIGHT,

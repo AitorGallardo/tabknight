@@ -317,16 +317,15 @@ function HeroTopScrim() {
 
 /** Tier 0.5 — replaces the giant favicon fallback with a title/description card. */
 function HeroTypographicCard({ tab, card }: { tab: NavigatorTab; card?: ContentCard }) {
-  const themeColor = card?.themeColor;
   const siteName = card?.siteName || domainOf(tab.url);
   return (
     <div
       className="relative flex h-full flex-col justify-end overflow-hidden p-6"
-      style={{ background: `linear-gradient(155deg, ${themeColor || "#1c1c1e"}33 0%, rgba(10,10,12,0.6) 70%)` }}
+      style={{ background: "linear-gradient(155deg, rgba(82,82,91,0.42) 0%, rgba(9,9,11,0.78) 70%)" }}
     >
       <div
         className="pointer-events-none absolute -left-16 -top-16 h-48 w-48 rounded-full blur-3xl"
-        style={{ background: `${themeColor || "#0a84ff"}22` }}
+        style={{ background: "rgba(161,161,170,0.12)" }}
       />
       <div className="relative">
         <div className="mb-3 flex items-center gap-2">
@@ -1676,7 +1675,7 @@ export function TabPreviewView({
 
   return (
     <div
-      className="tk-preview grid h-full w-full grid-cols-[clamp(260px,36%,360px)_minmax(0,1fr)] overflow-hidden rounded-[18px] border border-black/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(244,244,246,0.92))] text-zinc-950 shadow-[0_32px_90px_rgba(0,0,0,0.28)] backdrop-blur-[30px] dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(28,28,30,0.86),rgba(20,20,22,0.84))] dark:text-[#f5f5f7] dark:shadow-[0_32px_90px_rgba(0,0,0,0.55)]"
+      className="tk-preview tk-frozen-glass grid h-full w-full grid-cols-[clamp(260px,36%,360px)_minmax(0,1fr)] overflow-hidden rounded-[18px] text-zinc-950 dark:text-zinc-50"
       style={{
         fontFamily:
           '-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", system-ui, sans-serif',
@@ -1687,7 +1686,7 @@ export function TabPreviewView({
       </div>
       {/* Left rail: search + grouped tab list */}
       <div className="flex min-h-0 flex-col border-r border-black/[0.07] dark:border-white/[0.07]">
-        <div className="m-2 mb-0 flex items-center gap-2 rounded-xl border border-[#0068d9]/25 bg-white/75 px-3 py-2 shadow-sm ring-2 ring-[#0068d9]/15 focus-within:ring-[#0068d9]/45 dark:border-white/[0.07] dark:bg-white/[0.035] dark:ring-[#0a84ff]/20 dark:focus-within:ring-[#0a84ff]/50">
+        <div className="m-2 mb-0 flex items-center gap-2 rounded-xl border border-[hsl(var(--tk-accent)/0.25)] bg-white/75 px-3 py-2 shadow-sm ring-2 ring-[hsl(var(--tk-accent)/0.15)] focus-within:ring-[hsl(var(--tk-accent)/0.45)] dark:border-white/[0.07] dark:bg-white/[0.035] dark:ring-[hsl(var(--tk-accent)/0.20)] dark:focus-within:ring-[hsl(var(--tk-accent)/0.50)]">
           <Search className="h-4 w-4 shrink-0 text-black/50 dark:text-white/55" />
           <input
             ref={inputRef}
@@ -1710,9 +1709,9 @@ export function TabPreviewView({
           <button
               type="button"
               onClick={() => (mode === "audio" ? enterTabsMode() : enterAudioMode())}
-              className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium transition-colors active:scale-[0.97] focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/60 ${
+              className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium transition-colors active:scale-[0.97] focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.60)] ${
                 mode === "audio"
-                  ? "bg-[#0057b8] text-white ring-1 ring-[#0057b8] dark:bg-[#0a84ff]/20 dark:text-[#5eaeff] dark:ring-[#0a84ff]/40"
+                  ? "bg-[hsl(var(--tk-accent-solid))] text-[hsl(var(--tk-accent-foreground))] ring-1 ring-[hsl(var(--tk-accent))]"
                   : "bg-black/[0.06] text-black/70 hover:bg-black/[0.10] dark:bg-white/[0.08] dark:text-white/70 dark:hover:bg-white/[0.12]"
               }`}
               aria-label={`Audio tabs, ${audioList.length} available — ${mode === "audio" ? "show all tabs" : "show audio controls"}`}
@@ -1726,7 +1725,7 @@ export function TabPreviewView({
           <button
             type="button"
             onClick={() => void dismiss(true)}
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-black/[0.06] text-black/55 transition-colors active:scale-[0.97] hover:bg-black/[0.12] hover:text-black/80 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/60 dark:bg-white/[0.06] dark:text-white/55 dark:hover:bg-white/[0.12] dark:hover:text-white/80"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-black/[0.06] text-black/55 transition-colors active:scale-[0.97] hover:bg-black/[0.12] hover:text-black/80 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.60)] dark:bg-white/[0.06] dark:text-white/55 dark:hover:bg-white/[0.12] dark:hover:text-white/80"
             aria-label="Close preview"
           >
             <X className="h-3.5 w-3.5" />
@@ -1741,7 +1740,7 @@ export function TabPreviewView({
                 key={command.id}
                 type="button"
                 onClick={() => void runCommand(command, selectedCommandTarget)}
-                className="flex shrink-0 items-center gap-1 rounded-md border border-black/10 bg-black/[0.035] px-1.5 py-1 text-black/65 transition-colors hover:bg-black/[0.08] focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/50 dark:border-white/10 dark:bg-white/[0.035] dark:text-white/65 dark:hover:bg-white/[0.08]"
+                className="flex shrink-0 items-center gap-1 rounded-md border border-black/10 bg-black/[0.035] px-1.5 py-1 text-black/65 transition-colors hover:bg-black/[0.08] focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.50)] dark:border-white/10 dark:bg-white/[0.035] dark:text-white/65 dark:hover:bg-white/[0.08]"
                 aria-label={`${command.actionLabel}. Shortcut ${command.shortcut}`}
               >
                 <span>{command.actionLabel.replace(" Tab", "")}</span>
@@ -1755,7 +1754,7 @@ export function TabPreviewView({
                 setActiveIndex(0);
                 queueMicrotask(focusInputAtEnd);
               }}
-              className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[#0057b8] hover:bg-[#0057b8]/10 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/50 dark:text-[#5eaeff]"
+              className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[hsl(var(--tk-accent))] hover:bg-[hsl(var(--tk-accent)/0.10)] focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.50)]"
             >
               All commands <Kbd>&gt;</Kbd>
             </button>
@@ -1796,7 +1795,7 @@ export function TabPreviewView({
                     onMouseEnter={() => setActiveIndex(index)}
                     style={audioList.length > CONTENT_VISIBILITY_THRESHOLD ? { contentVisibility: "auto", containIntrinsicSize: ROW_CONTAIN_SIZE } : undefined}
                     className={`flex w-full items-center gap-1.5 rounded-[9px] px-1.5 py-1 transition-colors duration-100 ${
-                      active ? "bg-[#0057b8] text-white ring-2 ring-inset ring-white/55 dark:bg-[#0a84ff]" : "text-black/80 hover:bg-black/[0.05] dark:text-white/80 dark:hover:bg-white/[0.06]"
+                      active ? "bg-[hsl(var(--tk-accent-solid))] text-[hsl(var(--tk-accent-foreground))] ring-2 ring-inset ring-white/55" : "text-black/80 hover:bg-black/[0.05] dark:text-white/80 dark:hover:bg-white/[0.06]"
                     } ${tab.muted ? "opacity-60" : ""}`}
                   >
                     <button
@@ -1901,7 +1900,7 @@ export function TabPreviewView({
                     onMouseEnter={() => setActiveIndex(index)}
                     onClick={() => void runCommand(command)}
                     className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${
-                      active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]"
+                      active ? "bg-[hsl(var(--tk-accent-solid))] text-[hsl(var(--tk-accent-foreground))]" : "text-white/80 hover:bg-white/[0.06]"
                     }`}
                   >
                     <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-md ${active ? "bg-white/20" : "bg-white/[0.08]"}`}>
@@ -1946,7 +1945,7 @@ export function TabPreviewView({
                       onMouseEnter={() => setActiveIndex(resultIndex)}
                       onClick={() => void executeIntent(item)}
                       className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${item.type === "tab" && pairingTabId === item.tab.id ? "tk-pairing" : ""} ${
-                        active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]"
+                        active ? "bg-[hsl(var(--tk-accent-solid))] text-[hsl(var(--tk-accent-foreground))]" : "text-white/80 hover:bg-white/[0.06]"
                       }`}
                     >
                       <span className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${active ? "bg-white/20" : "bg-white/[0.08]"}`}>
@@ -2015,8 +2014,8 @@ export function TabPreviewView({
                         <div
                           className={`group/split relative grid grid-cols-2 overflow-hidden rounded-[10px] border transition-colors duration-100 ${
                             pairActive
-                              ? "border-[#0a84ff]/70 bg-[#0057b8] ring-2 ring-inset ring-white/45 shadow-sm dark:bg-[#0a84ff]"
-                              : "border-black/[0.08] bg-[#0068d9]/[0.07] hover:bg-[#0068d9]/[0.12] dark:border-white/[0.09] dark:bg-white/[0.045] dark:hover:bg-white/[0.07]"
+                              ? "border-[hsl(var(--tk-accent)/0.70)] bg-[hsl(var(--tk-accent-solid))] ring-2 ring-inset ring-white/45 shadow-sm"
+                              : "border-black/[0.08] bg-[hsl(var(--tk-accent)/0.07)] hover:bg-[hsl(var(--tk-accent)/0.12)] dark:border-white/[0.09] dark:hover:bg-white/[0.07]"
                           }`}
                           aria-label={isCurrentPair ? "Current split view" : "Split view pair"}
                         >
@@ -2054,7 +2053,7 @@ export function TabPreviewView({
                           })}
                           <span
                             aria-hidden="true"
-                            className={`pointer-events-none absolute bottom-1 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-md border border-white/20 bg-[#111318]/90 px-1.5 py-0.5 text-[9px] font-medium text-white shadow-sm backdrop-blur-sm transition-opacity duration-100 motion-reduce:transition-none ${
+                            className={`pointer-events-none absolute bottom-1 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-md border border-white/20 bg-zinc-900/90 px-1.5 py-0.5 text-[9px] font-medium text-white shadow-sm backdrop-blur-sm transition-opacity duration-100 motion-reduce:transition-none ${
                               pairActive ? "opacity-100" : "opacity-0 group-hover/split:opacity-100"
                             }`}
                           >
@@ -2128,11 +2127,11 @@ export function TabPreviewView({
                           ...(showEntrance ? { animationDelay: `${index * 18}ms` } : undefined),
                         }}
                         aria-label={`${tab.title}. Open tab. Switch.${tab.isOrigin ? " Current view." : ""}${tab.splitPartnerTitle ? ` Split with ${tab.splitPartnerTitle}.` : ""}${tab.pinned ? " Pinned." : ""}${tab.audible ? " Playing audio." : ""}${tab.muted ? " Muted." : ""}${tab.discarded ? " Discarded." : ""}`}
-                        className={`flex w-full items-center gap-2 rounded-[9px] px-2 py-1 text-left transition-colors duration-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/70 ${showEntrance ? "tk-row-in" : ""} ${pairingTabId === tab.id ? "tk-pairing" : ""} ${
+                        className={`flex w-full items-center gap-2 rounded-[9px] px-2 py-1 text-left transition-colors duration-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.70)] ${showEntrance ? "tk-row-in" : ""} ${pairingTabId === tab.id ? "tk-pairing" : ""} ${
                           active
-                            ? "bg-[#0057b8] text-white ring-2 ring-inset ring-white/55 shadow-sm dark:bg-[#0a84ff]"
+                            ? "bg-[hsl(var(--tk-accent-solid))] text-[hsl(var(--tk-accent-foreground))] ring-2 ring-inset ring-white/55 shadow-sm"
                             : isFeatured
-                              ? "bg-[#0068d9]/[0.07] text-black/80 hover:bg-[#0068d9]/[0.12] dark:text-white/80"
+                              ? "bg-[hsl(var(--tk-accent)/0.07)] text-black/80 hover:bg-[hsl(var(--tk-accent)/0.12)] dark:text-white/80"
                               : "text-black/80 hover:bg-black/[0.05] dark:text-white/80 dark:hover:bg-white/[0.06]"
                         } ${tab.discarded ? "opacity-[0.55]" : ""}`}
                       >
@@ -2158,7 +2157,7 @@ export function TabPreviewView({
                         {pairingTabId === tab.id ? (
                           <Columns2 className="h-3.5 w-3.5 shrink-0 text-white" aria-hidden="true" />
                         ) : tab.splitViewId !== null && tab.splitViewId !== undefined ? (
-                          <span className={`flex shrink-0 items-center gap-1 text-[10px] font-medium ${active ? "text-white/85" : "text-[#0057b8] dark:text-[#70b8ff]"}`}>
+                          <span className={`flex shrink-0 items-center gap-1 text-[10px] font-medium ${active ? "text-white/85" : "text-[hsl(var(--tk-accent))]"}`}>
                             <Columns2 className="h-3 w-3" /> Split
                           </span>
                         ) : (
@@ -2182,7 +2181,7 @@ export function TabPreviewView({
           <div className="flex h-full min-h-0 flex-col">
             <div className="grid flex-1 place-items-center px-12 text-center">
               <div className="max-w-sm">
-                <span className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-[#0a84ff]/15 text-[#5eaeff] ring-1 ring-[#0a84ff]/30">
+                <span className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-[hsl(var(--tk-accent)/0.15)] text-[hsl(var(--tk-accent))] ring-1 ring-[hsl(var(--tk-accent)/0.30)]">
                   <Command className="h-5 w-5" />
                 </span>
                 <h2 className="mt-4 text-xl font-semibold tracking-[-0.02em] text-white/95">{activeCommand.label}</h2>
@@ -2210,7 +2209,7 @@ export function TabPreviewView({
                       </div>
                       <div className="text-lg font-semibold text-white/90">{activeIntent.title}</div>
                       <div className="mt-2 break-all text-xs leading-relaxed text-white/45">{activeIntent.url}</div>
-                      <div className="mt-4 text-xs font-medium text-[#5eaeff]">{activeIntent.actionLabel} · Enter</div>
+                      <div className="mt-4 text-xs font-medium text-[hsl(var(--tk-accent))]">{activeIntent.actionLabel} · Enter</div>
                     </div>
                   </div>
                 ) : (
@@ -2239,7 +2238,7 @@ export function TabPreviewView({
                 aspectRatio: HERO_ASPECT,
                 background:
                   heroTier === "thumb-contain"
-                    ? `${activeCard?.themeColor ?? "#1c1c1e"}22`
+                    ? "rgba(63,63,70,0.28)"
                     : "rgba(255,255,255,0.03)",
               }}
             >
@@ -2303,7 +2302,7 @@ export function TabPreviewView({
                   <div
                     className="h-full w-full"
                     style={{
-                      background: `linear-gradient(155deg, ${activeCard?.themeColor ?? "#1c1c1e"}33 0%, rgba(10,10,12,0.6) 70%)`,
+                      background: "linear-gradient(155deg, rgba(82,82,91,0.42) 0%, rgba(9,9,11,0.78) 70%)",
                     }}
                   />
                 )}
@@ -2327,7 +2326,7 @@ export function TabPreviewView({
               </h2>
               <div className="mt-1 truncate text-xs text-black/50 dark:text-white/45">{activeTabItem.url}</div>
               {activeTabItem.splitPartnerTitle && (
-                <div className="mt-2 inline-flex max-w-full items-center gap-1.5 rounded-md border border-[#0068d9]/20 bg-[#0068d9]/[0.07] px-2 py-1 text-[11px] text-[#0057b8] dark:border-[#0a84ff]/25 dark:bg-[#0a84ff]/10 dark:text-[#70b8ff]">
+                <div className="mt-2 inline-flex max-w-full items-center gap-1.5 rounded-md border border-[hsl(var(--tk-accent)/0.20)] bg-[hsl(var(--tk-accent)/0.07)] px-2 py-1 text-[11px] text-[hsl(var(--tk-accent))] dark:border-[hsl(var(--tk-accent)/0.25)] dark:bg-[hsl(var(--tk-accent)/0.10)]">
                   <Columns2 className="h-3 w-3 shrink-0" />
                   <span className="truncate">
                     {activeTabItem.isOrigin ? "Current view · " : ""}Split with {activeTabItem.splitPartnerTitle}
@@ -2368,7 +2367,7 @@ export function TabPreviewView({
                           setRevealedTextHash(activeCardHash);
                           setAnnouncement("Page text shown for this preview only");
                         }}
-                        className="mt-2 rounded-md border border-black/15 bg-white/60 px-2 py-1 text-[11px] font-medium text-black/75 hover:bg-white focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/60 dark:border-white/15 dark:bg-white/[0.07] dark:text-white/75 dark:hover:bg-white/[0.12]"
+                        className="mt-2 rounded-md border border-black/15 bg-white/60 px-2 py-1 text-[11px] font-medium text-black/75 hover:bg-white focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.60)] dark:border-white/15 dark:bg-white/[0.07] dark:text-white/75 dark:hover:bg-white/[0.12]"
                       >
                         Show for this preview
                       </button>

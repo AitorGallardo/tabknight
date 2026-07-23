@@ -12,6 +12,12 @@ import type {
   MediaStatusResult,
   PreviewCardCaptureMessage,
 } from "../popup/lib/preview/types";
+import {
+  ACCENT_PREFERENCE_KEY,
+  DEFAULT_ACCENT_PREFERENCE,
+  isAccentPreference,
+  type AccentPreference,
+} from "../popup/lib/appearance";
 
 // Idempotency guard: chrome.scripting.executeScript can run this file more
 // than once on the same page (e.g. onStartup's injectContentScriptIntoOpenTabs
@@ -35,16 +41,26 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean; __tabknightDocume
 
   let harvestTimer: number | undefined;
   let previewTextPreference: PreviewTextPreference = DEFAULT_PREVIEW_TEXT_PREFERENCE;
+  let accentPreference: AccentPreference = DEFAULT_ACCENT_PREFERENCE;
 
   void chrome.storage.local.get(PREVIEW_TEXT_PREFERENCE_KEY).then((stored) => {
     const value = stored[PREVIEW_TEXT_PREFERENCE_KEY];
     if (isPreviewTextPreference(value)) previewTextPreference = value;
   }).catch(() => {});
 
+  void chrome.storage.local.get(ACCENT_PREFERENCE_KEY).then((stored) => {
+    const value = stored[ACCENT_PREFERENCE_KEY];
+    if (isAccentPreference(value)) accentPreference = value;
+  }).catch(() => {});
+
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== "local") return;
-    const value = changes[PREVIEW_TEXT_PREFERENCE_KEY]?.newValue;
-    previewTextPreference = isPreviewTextPreference(value) ? value : DEFAULT_PREVIEW_TEXT_PREFERENCE;
+    if (PREVIEW_TEXT_PREFERENCE_KEY in changes) {
+      const value = changes[PREVIEW_TEXT_PREFERENCE_KEY]?.newValue;
+      previewTextPreference = isPreviewTextPreference(value) ? value : DEFAULT_PREVIEW_TEXT_PREFERENCE;
+    }
+    const accent = changes[ACCENT_PREFERENCE_KEY]?.newValue;
+    if (accent !== undefined) accentPreference = isAccentPreference(accent) ? accent : DEFAULT_ACCENT_PREFERENCE;
   });
 
   function harvestCard(): void {
@@ -139,6 +155,9 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean; __tabknightDocume
     const host = document.createElement("div");
     host.id = SPLIT_HINT_HOST_ID;
     const shadow = host.attachShadow({ mode: "open" });
+    const accent = accentPreference === "raycast"
+      ? { text: "#ffb0b0", background: "rgba(255,99,99,.18)", border: "rgba(255,99,99,.34)" }
+      : { text: "#e4e4e7", background: "rgba(113,113,122,.24)", border: "rgba(161,161,170,.34)" };
     shadow.innerHTML = `
       <style>
         :host { all: initial; }
@@ -158,13 +177,13 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean; __tabknightDocume
         .hint.visible { opacity: 1; transform: translate(-50%, 0) scale(1); }
         .keys {
           flex: none; padding: 3px 6px; border-radius: 6px;
-          color: white; background: rgba(10,132,255,.24);
-          border: 1px solid rgba(94,174,255,.36); font-weight: 700;
+          color: ${accent.text}; background: ${accent.background};
+          border: 1px solid ${accent.border}; font-weight: 700;
         }
         .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         @media (prefers-color-scheme: light) {
           .hint { color: rgba(17,24,39,.92); background: rgba(255,255,255,.92); border-color: rgba(0,0,0,.10); }
-          .keys { color: #0057b8; background: rgba(0,104,217,.10); border-color: rgba(0,104,217,.20); }
+          .keys { color: ${accentPreference === "raycast" ? "#a31515" : "#3f3f46"}; background: ${accentPreference === "raycast" ? "rgba(255,99,99,.13)" : "rgba(82,82,91,.11)"}; border-color: ${accentPreference === "raycast" ? "rgba(215,42,42,.24)" : "rgba(82,82,91,.22)"}; }
         }
         @media (prefers-reduced-motion: reduce) { .hint { transition: none; transform: translate(-50%, 0); } }
       </style>
@@ -273,9 +292,9 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean; __tabknightDocume
       .tkp-backdrop {
         position: fixed; inset: 0; z-index: 2147483647;
         display: flex; align-items: center; justify-content: center;
-        background: rgba(6, 7, 10, 0.34);
-        backdrop-filter: blur(7px) saturate(105%);
-        -webkit-backdrop-filter: blur(7px) saturate(105%);
+        background: rgba(9, 9, 11, 0.30);
+        backdrop-filter: blur(12px) saturate(108%);
+        -webkit-backdrop-filter: blur(12px) saturate(108%);
         opacity: 0;
         transition: opacity ${PREVIEW_MOTION_MS}ms cubic-bezier(0.2, 0.8, 0.2, 1);
       }
@@ -284,11 +303,11 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean; __tabknightDocume
         position: relative;
         width: min(1040px, 94vw); height: min(640px, 88dvh);
         border-radius: 18px; overflow: hidden;
-        background: linear-gradient(180deg, rgba(28, 28, 30, 0.86), rgba(20, 20, 22, 0.84));
+        background: linear-gradient(135deg, rgba(63,63,70,.68), rgba(9,9,11,.64));
         border: 1px solid rgba(255, 255, 255, 0.1);
-        box-shadow: 0 32px 90px rgba(0, 0, 0, 0.55);
-        backdrop-filter: blur(30px);
-        -webkit-backdrop-filter: blur(30px);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.13), inset 0 0 0 1px rgba(255,255,255,.045), 0 32px 90px rgba(0, 0, 0, 0.52);
+        backdrop-filter: blur(42px) saturate(112%) contrast(104%);
+        -webkit-backdrop-filter: blur(42px) saturate(112%) contrast(104%);
         transform: scale(0.98);
         transition: transform ${PREVIEW_MOTION_MS}ms cubic-bezier(0.2, 0.8, 0.2, 1);
       }
@@ -316,9 +335,9 @@ type TabknightWindow = Window & { __tabknightLoaded?: boolean; __tabknightDocume
       .tkp-frame { width: 100%; height: 100%; border: 0; background: transparent; position: relative; }
       @media (prefers-color-scheme: light) {
         .tkp-panel {
-          background: linear-gradient(180deg, rgba(255,255,255,0.94), rgba(244,244,246,0.92));
+          background: linear-gradient(135deg, rgba(255,255,255,.74), rgba(244,244,245,.64));
           border-color: rgba(0, 0, 0, 0.1);
-          box-shadow: 0 32px 90px rgba(0, 0, 0, 0.28);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,.82), inset 0 0 0 1px rgba(255,255,255,.24), 0 32px 90px rgba(9,9,11,.24);
         }
       }
       @media (max-width: 700px), (max-height: 540px) {

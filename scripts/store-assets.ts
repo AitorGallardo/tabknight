@@ -227,9 +227,9 @@ function brandBackground(): string {
   return `
     background:#05060a;
     background-image:
-      radial-gradient(1100px 720px at 78% -10%, rgba(58,111,255,0.30), transparent 60%),
-      radial-gradient(900px 620px at 12% 108%, rgba(94,174,255,0.22), transparent 62%),
-      radial-gradient(760px 520px at 92% 96%, rgba(120,86,255,0.20), transparent 60%),
+      radial-gradient(1100px 720px at 78% -10%, rgba(113,113,122,0.30), transparent 60%),
+      radial-gradient(900px 620px at 12% 108%, rgba(161,161,170,0.22), transparent 62%),
+      radial-gradient(760px 520px at 92% 96%, rgba(82,82,91,0.24), transparent 60%),
       linear-gradient(180deg,#080a12,#04050a);
   `;
 }
@@ -245,8 +245,8 @@ const BACKDROP_HTML = `<!doctype html><html><head><meta charset="utf-8">
     background-size:26px 26px;
     -webkit-mask-image:radial-gradient(circle at 50% 42%, black 8%, transparent 70%);}
   .glow{position:fixed;border-radius:50%;filter:blur(60px);}
-  .g1{width:520px;height:520px;left:60%;top:-14%;background:rgba(58,111,255,.32);}
-  .g2{width:460px;height:460px;left:-8%;top:58%;background:rgba(94,174,255,.24);}
+  .g1{width:520px;height:520px;left:60%;top:-14%;background:rgba(113,113,122,.32);}
+  .g2{width:460px;height:460px;left:-8%;top:58%;background:rgba(161,161,170,.24);}
   h1{position:fixed;left:8%;top:24%;margin:0;font-size:112px;line-height:1;letter-spacing:-.04em;
      font-weight:800;color:rgba(255,255,255,.06);}
   p{position:fixed;left:8.4%;top:46%;margin:0;font-size:26px;letter-spacing:-.01em;color:rgba(255,255,255,.05);}
@@ -274,8 +274,8 @@ function tileHtml(wide: boolean): string {
     background-size:${wide ? 30 : 20}px ${wide ? 30 : 20}px;
     -webkit-mask-image:radial-gradient(circle at 72% 30%, black 4%, transparent 66%);}
   .glow{position:fixed;border-radius:50%;filter:blur(${wide ? 80 : 46}px);}
-  .g1{width:${wide ? 620 : 300}px;height:${wide ? 620 : 300}px;right:-6%;top:-38%;background:rgba(58,111,255,.34);}
-  .g2{width:${wide ? 520 : 240}px;height:${wide ? 520 : 240}px;left:-8%;bottom:-46%;background:rgba(120,86,255,.26);}
+  .g1{width:${wide ? 620 : 300}px;height:${wide ? 620 : 300}px;right:-6%;top:-38%;background:rgba(113,113,122,.34);}
+  .g2{width:${wide ? 520 : 240}px;height:${wide ? 520 : 240}px;left:-8%;bottom:-46%;background:rgba(82,82,91,.28);}
   .wrap{position:relative;display:flex;align-items:center;gap:${wide ? 44 : 22}px;padding:0 ${pad}px;width:100%;}
   .logo{width:${iconSize}px;height:${iconSize}px;flex:0 0 auto;border-radius:${wide ? 30 : 18}px;
     box-shadow:0 24px 60px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.08) inset;}
@@ -283,7 +283,7 @@ function tileHtml(wide: boolean): string {
   .brand{display:flex;align-items:baseline;gap:${wide ? 20 : 11}px;}
   h1{margin:0;font-size:${title}px;line-height:.98;letter-spacing:-.045em;font-weight:800;
     color:#fff;text-shadow:0 2px 24px rgba(0,0,0,.5);}
-  h1 b{color:#5eaeff;font-weight:800;}
+  h1 b{color:#d4d4d8;font-weight:800;}
   .kbd{display:inline-flex;gap:${wide ? 8 : 5}px;transform:translateY(-${wide ? 10 : 5}px);}
   .kbd span{font-size:${keycap}px;font-weight:700;color:#dbe9ff;
     padding:${wide ? "6px 14px" : "3px 8px"};border-radius:${wide ? 12 : 8}px;
@@ -317,10 +317,10 @@ function popupStageHtml(popupPng: string): string {
     background-image:radial-gradient(circle at 1px 1px, rgba(255,255,255,.26) 1px, transparent 0);
     background-size:28px 28px;-webkit-mask-image:radial-gradient(circle at 30% 40%, black 6%, transparent 70%);}
   .glow{position:fixed;border-radius:50%;filter:blur(70px);}
-  .g1{width:520px;height:520px;right:2%;top:-30%;background:rgba(58,111,255,.30);}
+  .g1{width:520px;height:520px;right:2%;top:-30%;background:rgba(113,113,122,.30);}
   .copy{max-width:420px;}
   .copy h2{margin:0;font-size:52px;line-height:1.02;letter-spacing:-.03em;font-weight:800;color:#fff;}
-  .copy h2 b{color:#5eaeff;}
+  .copy h2 b{color:#d4d4d8;}
   .copy p{margin:20px 0 0;font-size:21px;line-height:1.45;color:rgba(226,236,255,.78);font-weight:500;}
   .shot{width:400px;height:500px;border-radius:22px;overflow:hidden;
     box-shadow:0 40px 100px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.10);}

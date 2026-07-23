@@ -1,4 +1,5 @@
 import type { BookmarkFolder, TabInfo, SaveResult } from "../types";
+import { badgeColorForAccent, getAccentPreference } from "./appearance";
 import { extractDomain, isSystemUrl, findDuplicateUrls, generateFolderNameWithSuffix } from "./utils";
 
 /**
@@ -183,7 +184,7 @@ export async function updateBadgeCount(): Promise<void> {
     const tabs = await getCurrentWindowTabs();
     const count = tabs.filter((tab) => tab.url && !isSystemUrl(tab.url)).length;
     await chrome.action.setBadgeText({ text: count > 0 ? String(count) : "" });
-    await chrome.action.setBadgeBackgroundColor({ color: "#6366f1" });
+    await chrome.action.setBadgeBackgroundColor({ color: badgeColorForAccent(await getAccentPreference()) });
   } catch {
     // Badge update failed, ignore
   }

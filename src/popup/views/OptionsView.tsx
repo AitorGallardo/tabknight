@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Eye, Keyboard, ShieldCheck, Trash2 } from "lucide-react";
+import { Eye, Keyboard, Palette, ShieldCheck, Trash2 } from "lucide-react";
 import { clearAllCards, clearAllThumbnails, countCards, countThumbnails, redactAllCardText } from "../lib/preview/db";
 import {
   DEFAULT_PREVIEW_TEXT_PREFERENCE,
@@ -8,6 +8,15 @@ import {
   setPreviewTextPreference,
   type PreviewTextPreference,
 } from "../lib/preview/privacy";
+import {
+  DEFAULT_ACCENT_PREFERENCE,
+  RAYCAST_RED,
+  ZINC_BADGE,
+  applyAccentPreference,
+  getAccentPreference,
+  setAccentPreference,
+  type AccentPreference,
+} from "../lib/appearance";
 
 interface StorageStats {
   cards: number;
@@ -23,7 +32,7 @@ function formatBytes(bytes: number | null): string {
 }
 
 const panelClass =
-  "rounded-[18px] border border-white/10 bg-[linear-gradient(180deg,rgba(28,28,30,0.86),rgba(20,20,22,0.84))] px-6 py-5 shadow-[0_30px_80px_rgba(0,0,0,0.5)] backdrop-blur-[30px]";
+  "tk-frozen-card rounded-[18px] border border-white/10 px-6 py-5";
 
 export function OptionsView() {
   const [shortcut, setShortcut] = useState<string | null>(null);
@@ -34,6 +43,7 @@ export function OptionsView() {
   const [cleared, setCleared] = useState(false);
   const [textPreference, setTextPreference] = useState<PreviewTextPreference>(DEFAULT_PREVIEW_TEXT_PREFERENCE);
   const [privacyStatus, setPrivacyStatus] = useState("");
+  const [accentPreference, setAccentPreferenceState] = useState<AccentPreference>(DEFAULT_ACCENT_PREFERENCE);
   const version = chrome.runtime.getManifest().version;
 
   const loadStats = useCallback(async () => {
@@ -70,7 +80,15 @@ export function OptionsView() {
     })();
     void loadStats();
     void ensurePreviewTextPrivacy(redactAllCardText).then(setTextPreference);
+    void getAccentPreference().then(setAccentPreferenceState);
   }, [loadStats]);
+
+  const handleAccentPreference = useCallback(async (preference: AccentPreference) => {
+    setAccentPreferenceState(preference);
+    applyAccentPreference(preference);
+    setPrivacyStatus(`${preference === "zinc" ? "Zinc" : "Raycast red"} accent enabled`);
+    await setAccentPreference(preference);
+  }, []);
 
   const handleTextPreference = useCallback(async (preference: PreviewTextPreference) => {
     setTextPreference(preference);
@@ -101,14 +119,14 @@ export function OptionsView() {
   };
 
   return (
-    <div className="relative min-h-screen overflow-x-hidden bg-zinc-100 px-4 py-10 text-zinc-950 dark:bg-[#05060a] dark:text-[#f5f5f7]">
+    <div className="relative min-h-screen overflow-x-hidden bg-zinc-100 px-4 py-10 text-zinc-950 dark:bg-zinc-950 dark:text-zinc-50">
       <div aria-live="polite" className="sr-only">{privacyStatus}</div>
       <div
         className="pointer-events-none absolute inset-0 opacity-[0.16]"
         style={{
           backgroundImage: [
             "radial-gradient(circle at 1px 1px, rgba(255,255,255,0.22) 1px, transparent 0)",
-            "radial-gradient(circle at 1px 1px, rgba(90,120,255,0.12) 1px, transparent 0)",
+            "radial-gradient(circle at 1px 1px, rgba(161,161,170,0.12) 1px, transparent 0)",
           ].join(","),
           backgroundSize: "14px 14px, 22px 22px",
           backgroundPosition: "0 0, 7px 7px",
@@ -128,7 +146,7 @@ export function OptionsView() {
 
         <section className={panelClass}>
           <div className="flex items-center gap-2 text-sm font-semibold text-white/90">
-            <Keyboard className="h-4 w-4 text-[#5eaeff]" />
+            <Keyboard className="h-4 w-4 text-[hsl(var(--tk-accent))]" />
             Shortcut
           </div>
           <p className="mt-2 text-xs text-white/55">
@@ -154,16 +172,58 @@ export function OptionsView() {
             <button
               type="button"
               onClick={openShortcutsPage}
-              className="rounded-md border border-white/15 bg-white/[0.06] px-3 py-1.5 text-xs font-medium text-white/80 transition-colors hover:bg-white/[0.12] focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0a84ff]/50"
+              className="rounded-md border border-white/15 bg-white/[0.06] px-3 py-1.5 text-xs font-medium text-white/80 transition-colors hover:bg-white/[0.12] focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.55)]"
             >
               Change
             </button>
           </div>
         </section>
 
+        <section className={panelClass} aria-labelledby="accent-heading">
+          <div id="accent-heading" className="flex items-center gap-2 text-sm font-semibold text-white/90">
+            <Palette className="h-4 w-4 text-[hsl(var(--tk-accent))]" />
+            Accent
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-white/55">
+            Zinc keeps TabKnight quiet by default. Raycast red changes emphasis and selection states without changing the zinc surfaces.
+          </p>
+          <fieldset className="mt-3 grid grid-cols-2 gap-2">
+            {([
+              ["zinc", "Zinc", ZINC_BADGE, "Sober default"],
+              ["raycast", "Raycast red", RAYCAST_RED, "Optional accent"],
+            ] as const).map(([value, label, color, description]) => {
+              const selected = accentPreference === value;
+              return (
+                <label
+                  key={value}
+                  className={`flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-2 transition-colors focus-within:ring-[2px] focus-within:ring-[hsl(var(--tk-accent)/0.55)] ${
+                    selected
+                      ? "border-[hsl(var(--tk-accent)/0.55)] bg-[hsl(var(--tk-accent)/0.12)]"
+                      : "border-white/10 bg-white/[0.035] hover:bg-white/[0.07]"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="accent"
+                    value={value}
+                    checked={selected}
+                    onChange={() => void handleAccentPreference(value)}
+                    className="sr-only"
+                  />
+                  <span className="h-5 w-5 shrink-0 rounded-full border border-white/20 shadow-sm" style={{ backgroundColor: color }} />
+                  <span className="min-w-0">
+                    <span className="block truncate text-xs font-medium text-white/85">{label}</span>
+                    <span className="block truncate text-[10px] text-white/40">{description}</span>
+                  </span>
+                </label>
+              );
+            })}
+          </fieldset>
+        </section>
+
         <section className={panelClass}>
           <div className="flex items-center gap-2 text-sm font-semibold text-white/90">
-            <ShieldCheck className="h-4 w-4 text-[#5eaeff]" />
+            <ShieldCheck className="h-4 w-4 text-[hsl(var(--tk-accent))]" />
             Privacy
           </div>
           <p className="mt-2 text-sm leading-relaxed text-white/70">
@@ -177,7 +237,7 @@ export function OptionsView() {
 
         <section className={panelClass} aria-labelledby="preview-text-heading">
           <div id="preview-text-heading" className="flex items-center gap-2 text-sm font-semibold text-white/90">
-            <Eye className="h-4 w-4 text-[#5eaeff]" />
+            <Eye className="h-4 w-4 text-[hsl(var(--tk-accent))]" />
             Page text in previews
           </div>
           <p className="mt-2 text-xs leading-relaxed text-white/55">
@@ -191,7 +251,7 @@ export function OptionsView() {
             ] as const).map(([value, label, description]) => (
               <label
                 key={value}
-                className="flex cursor-pointer gap-2 rounded-md border border-white/10 bg-white/[0.035] px-2.5 py-2 text-left transition-colors hover:bg-white/[0.07] focus-within:ring-[2px] focus-within:ring-[#0a84ff]/50"
+                className="flex cursor-pointer gap-2 rounded-md border border-white/10 bg-white/[0.035] px-2.5 py-2 text-left transition-colors hover:bg-white/[0.07] focus-within:ring-[2px] focus-within:ring-[hsl(var(--tk-accent)/0.55)]"
               >
                 <input
                   type="radio"
@@ -226,7 +286,7 @@ export function OptionsView() {
               type="button"
               onClick={() => void handleClear()}
               disabled={clearing}
-              className="flex items-center gap-1.5 rounded-md border border-red-400/25 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-200 transition-colors hover:bg-red-500/20 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0a84ff]/50 disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-md border border-red-400/25 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-200 transition-colors hover:bg-red-500/20 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.55)] disabled:opacity-50"
             >
               <Trash2 className="h-3.5 w-3.5" />
               Clear preview data

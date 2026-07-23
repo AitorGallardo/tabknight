@@ -128,7 +128,7 @@ export function SaveTabsView({ onSaveComplete }: SaveTabsViewProps) {
       {/* Header */}
       <div className="shrink-0 border-b border-white/[0.07] px-3 py-3 space-y-3">
         <div className="flex items-center gap-2">
-          <Bookmark className="h-4 w-4 text-[#5eaeff]" />
+          <Bookmark className="h-4 w-4 text-[hsl(var(--tk-accent))]" />
           <h1 className="text-sm font-semibold text-white/90">Save Tabs as Bookmarks</h1>
         </div>
 
