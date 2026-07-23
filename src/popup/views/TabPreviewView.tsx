@@ -1795,7 +1795,7 @@ export function TabPreviewView({
                     onMouseEnter={() => setActiveIndex(index)}
                     style={audioList.length > CONTENT_VISIBILITY_THRESHOLD ? { contentVisibility: "auto", containIntrinsicSize: ROW_CONTAIN_SIZE } : undefined}
                     className={`flex w-full items-center gap-1.5 rounded-[9px] px-1.5 py-1 transition-colors duration-100 ${
-                      active ? "bg-[hsl(var(--tk-accent-solid))] text-[hsl(var(--tk-accent-foreground))] ring-2 ring-inset ring-white/55" : "text-black/80 hover:bg-black/[0.05] dark:text-white/80 dark:hover:bg-white/[0.06]"
+                      active ? "bg-[hsl(var(--tk-accent-solid))] text-[hsl(var(--tk-accent-foreground))]" : "text-black/80 hover:bg-black/[0.05] dark:text-white/80 dark:hover:bg-white/[0.06]"
                     } ${tab.muted ? "opacity-60" : ""}`}
                   >
                     <button
@@ -1806,7 +1806,7 @@ export function TabPreviewView({
                       ref={registerItem(index)}
                       type="button"
                       onClick={() => void activate(tab)}
-                      className="flex min-w-0 flex-1 items-center gap-2 text-left focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-white/70"
+                      className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:bg-white/[0.12]"
                     >
                       <span
                         className={`grid h-5 w-5 shrink-0 place-items-center overflow-hidden rounded-[5px] ${
@@ -2012,14 +2012,14 @@ export function TabPreviewView({
                           </div>
                         )}
                         <div
-                          className={`group/split relative grid grid-cols-2 overflow-hidden rounded-[10px] border transition-colors duration-100 ${
+                          className={`group/split relative grid grid-cols-2 gap-px overflow-hidden rounded-[10px] transition-colors duration-100 ${
                             pairActive
-                              ? "border-[hsl(var(--tk-accent)/0.70)] bg-[hsl(var(--tk-accent-solid))] ring-2 ring-inset ring-white/45 shadow-sm"
-                              : "border-black/[0.08] bg-[hsl(var(--tk-accent)/0.07)] hover:bg-[hsl(var(--tk-accent)/0.12)] dark:border-white/[0.09] dark:hover:bg-white/[0.07]"
+                              ? "bg-[hsl(var(--tk-accent-solid))]"
+                              : "bg-[hsl(var(--tk-accent)/0.07)] hover:bg-[hsl(var(--tk-accent)/0.12)] dark:hover:bg-white/[0.07]"
                           }`}
                           aria-label={isCurrentPair ? "Current split view" : "Split view pair"}
                         >
-                          {[splitPairStart, splitPairEnd].map(({ tab: pairTab, index: pairIndex }, side) => {
+                          {[splitPairStart, splitPairEnd].map(({ tab: pairTab, index: pairIndex }) => {
                             const pairResultIndex = commandResults.length + pairIndex;
                             const halfActive = pairResultIndex === activeIndex;
                             return (
@@ -2033,9 +2033,9 @@ export function TabPreviewView({
                                 type="button"
                                 onMouseEnter={() => setActiveIndex(pairResultIndex)}
                                 onClick={() => void activate(pairTab)}
-                                className={`flex min-w-0 items-center gap-2 px-2 py-2 text-left transition-colors duration-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-inset focus-visible:ring-white/75 ${
-                                  side === 1 ? "border-l border-black/10 dark:border-white/15" : ""
-                                } ${halfActive ? "text-white" : pairActive ? "text-white/78" : "text-black/75 dark:text-white/75"} ${
+                                className={`flex min-w-0 items-center gap-2 px-2 py-2 text-left transition-colors duration-100 focus-visible:outline-none ${
+                                  halfActive ? "bg-white/[0.12] text-white" : pairActive ? "text-white/78" : "text-black/75 dark:text-white/75"
+                                } ${
                                   pairTab.discarded ? "opacity-[0.55]" : ""
                                 }`}
                               >
@@ -2053,7 +2053,7 @@ export function TabPreviewView({
                           })}
                           <span
                             aria-hidden="true"
-                            className={`pointer-events-none absolute bottom-1 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-md border border-white/20 bg-zinc-900/90 px-1.5 py-0.5 text-[9px] font-medium text-white shadow-sm backdrop-blur-sm transition-opacity duration-100 motion-reduce:transition-none ${
+                            className={`pointer-events-none absolute bottom-1 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-md bg-zinc-900/90 px-1.5 py-0.5 text-[9px] font-medium text-white shadow-sm backdrop-blur-sm transition-opacity duration-100 motion-reduce:transition-none ${
                               pairActive ? "opacity-100" : "opacity-0 group-hover/split:opacity-100"
                             }`}
                           >
@@ -2129,7 +2129,7 @@ export function TabPreviewView({
                         aria-label={`${tab.title}. Open tab. Switch.${tab.isOrigin ? " Current view." : ""}${tab.splitPartnerTitle ? ` Split with ${tab.splitPartnerTitle}.` : ""}${tab.pinned ? " Pinned." : ""}${tab.audible ? " Playing audio." : ""}${tab.muted ? " Muted." : ""}${tab.discarded ? " Discarded." : ""}`}
                         className={`flex w-full items-center gap-2 rounded-[9px] px-2 py-1 text-left transition-colors duration-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.70)] ${showEntrance ? "tk-row-in" : ""} ${pairingTabId === tab.id ? "tk-pairing" : ""} ${
                           active
-                            ? "bg-[hsl(var(--tk-accent-solid))] text-[hsl(var(--tk-accent-foreground))] ring-2 ring-inset ring-white/55 shadow-sm"
+                            ? "bg-[hsl(var(--tk-accent-solid))] text-[hsl(var(--tk-accent-foreground))]"
                             : isFeatured
                               ? "bg-[hsl(var(--tk-accent)/0.07)] text-black/80 hover:bg-[hsl(var(--tk-accent)/0.12)] dark:text-white/80"
                               : "text-black/80 hover:bg-black/[0.05] dark:text-white/80 dark:hover:bg-white/[0.06]"

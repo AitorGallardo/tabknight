@@ -196,10 +196,10 @@ export function OptionsView() {
               return (
                 <label
                   key={value}
-                  className={`flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-2 transition-colors focus-within:ring-[2px] focus-within:ring-[hsl(var(--tk-accent)/0.55)] ${
+                  className={`flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 transition-colors ${
                     selected
-                      ? "border-[hsl(var(--tk-accent)/0.55)] bg-[hsl(var(--tk-accent)/0.12)]"
-                      : "border-white/10 bg-white/[0.035] hover:bg-white/[0.07]"
+                      ? "bg-[hsl(var(--tk-accent)/0.18)]"
+                      : "bg-white/[0.035] hover:bg-white/[0.07] focus-within:bg-[hsl(var(--tk-accent)/0.10)]"
                   }`}
                 >
                   <input
@@ -248,10 +248,16 @@ export function OptionsView() {
               ["always-show", "Show on all sites", "Default — rich descriptions and short excerpts, stored only in this browser."],
               ["sensitive", "Hide on sensitive sites", "Uses a local URL check for mail, banking, account, and private areas."],
               ["always-hide", "Hide page text", "No descriptions or body excerpts are collected."],
-            ] as const).map(([value, label, description]) => (
+            ] as const).map(([value, label, description]) => {
+              const selected = textPreference === value;
+              return (
               <label
                 key={value}
-                className="flex cursor-pointer gap-2 rounded-md border border-white/10 bg-white/[0.035] px-2.5 py-2 text-left transition-colors hover:bg-white/[0.07] focus-within:ring-[2px] focus-within:ring-[hsl(var(--tk-accent)/0.55)]"
+                className={`flex cursor-pointer gap-2 rounded-md px-2.5 py-2 text-left transition-colors ${
+                  selected
+                    ? "bg-[hsl(var(--tk-accent)/0.18)]"
+                    : "bg-white/[0.035] hover:bg-white/[0.07] focus-within:bg-[hsl(var(--tk-accent)/0.10)]"
+                }`}
               >
                 <input
                   type="radio"
@@ -266,7 +272,8 @@ export function OptionsView() {
                   <span className="block text-[11px] leading-relaxed text-white/45">{description}</span>
                 </span>
               </label>
-            ))}
+              );
+            })}
           </fieldset>
         </section>
 

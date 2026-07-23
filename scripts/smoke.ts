@@ -497,6 +497,7 @@ async function main(): Promise<number> {
                 `(() => {
               const combo = document.querySelector('[role="combobox"]');
               const selected = document.querySelector('[role="option"][aria-selected="true"]');
+              const selectedStyle = selected ? getComputedStyle(selected) : null;
               const audioControl = Array.from(document.querySelectorAll('button')).find((el) => el.textContent?.includes('Audio'));
               audioControl?.focus();
               const nativeEnter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
@@ -510,7 +511,9 @@ async function main(): Promise<number> {
                 audioControl: !!audioControl,
                 controlsKeepNativeKeys,
                 commandHint: document.querySelector('input')?.getAttribute('placeholder')?.includes('Type > for commands') ?? false,
-                selectedBackground: selected ? getComputedStyle(selected).backgroundColor : null,
+                selectedBackground: selectedStyle?.backgroundColor ?? null,
+                selectedBoxShadow: selectedStyle?.boxShadow ?? null,
+                selectedBorderWidth: selectedStyle?.borderWidth ?? null,
                 noHorizontalOverflow: document.documentElement.scrollWidth <= innerWidth,
                 viewport: [innerWidth, innerHeight],
               });
@@ -531,6 +534,8 @@ async function main(): Promise<number> {
           !state.audioControl ||
           !state.controlsKeepNativeKeys ||
           !state.commandHint ||
+          state.selectedBoxShadow !== "none" ||
+          state.selectedBorderWidth !== "0px" ||
           !state.noHorizontalOverflow ||
           state.viewport[0] !== scenario.width ||
           state.viewport[1] !== scenario.height

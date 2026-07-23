@@ -18,8 +18,7 @@ export function TabItem({ tab, selected, onToggle, cursor = false, itemRef }: Ta
       className={cn(
         "flex w-full cursor-pointer items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 transition-colors duration-100",
         selected ? "bg-[hsl(var(--tk-accent)/0.14)] text-white/80" : "text-white/80 hover:bg-white/[0.06]",
-        cursor && "ring-1 ring-inset ring-white/15",
-        cursor && !selected && "bg-white/[0.06]"
+        cursor && !selected && "bg-[hsl(var(--tk-accent)/0.10)]"
       )}
     >
       <input
