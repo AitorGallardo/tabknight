@@ -17,9 +17,8 @@ export function TabItem({ tab, selected, onToggle, cursor = false, itemRef }: Ta
       ref={itemRef}
       className={cn(
         "flex w-full cursor-pointer items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 transition-colors duration-100",
-        selected ? "bg-[#0a84ff]/12 text-white/80" : "text-white/80 hover:bg-white/[0.06]",
-        cursor && "ring-1 ring-inset ring-white/15",
-        cursor && !selected && "bg-white/[0.06]"
+        selected ? "bg-[hsl(var(--tk-accent)/0.14)] text-white/80" : "text-white/80 hover:bg-white/[0.06]",
+        cursor && !selected && "bg-[hsl(var(--tk-accent)/0.10)]"
       )}
     >
       <input
@@ -28,12 +27,12 @@ export function TabItem({ tab, selected, onToggle, cursor = false, itemRef }: Ta
         onChange={() => onToggle(tab.id)}
         className={cn(
           "h-4 w-4 shrink-0 rounded-[4px] border border-white/20 bg-white/[0.06]",
-          "checked:bg-[#0a84ff] checked:border-[#0a84ff]",
-          "focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0a84ff]/50"
+          "checked:bg-[hsl(var(--tk-accent-solid))] checked:border-[hsl(var(--tk-accent-solid))]",
+          "focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.55)]"
         )}
       />
       <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md bg-white/[0.08] text-white/80">
-        <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={24} className="h-full w-full object-cover" />
+        <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={18} />
       </span>
       <span
         className="flex-1 truncate text-[13px] font-medium tracking-[-0.01em]"

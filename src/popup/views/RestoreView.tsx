@@ -102,7 +102,7 @@ export function RestoreView({ onBack }: RestoreViewProps) {
       {/* Header */}
       <div className="shrink-0 p-3 border-b border-white/[0.07] space-y-3">
         <div className="flex items-center gap-2">
-          <FolderOpen className="h-4 w-4 text-[#5eaeff]" />
+          <FolderOpen className="h-4 w-4 text-[hsl(var(--tk-accent))]" />
           <h1 className="text-sm font-semibold text-white/90">Restore Session</h1>
         </div>
 
@@ -135,7 +135,7 @@ export function RestoreView({ onBack }: RestoreViewProps) {
               rel="noopener noreferrer"
               className={cn(
                 "flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-white/80 transition-colors duration-100 hover:bg-white/[0.06]",
-                index === cursorIndex && "bg-white/[0.06] ring-1 ring-inset ring-white/15"
+                index === cursorIndex && "bg-[hsl(var(--tk-accent)/0.12)]"
               )}
             >
               <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md bg-white/[0.08] text-white/80">

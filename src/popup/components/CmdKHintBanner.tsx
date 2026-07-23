@@ -74,7 +74,7 @@ export function CmdKHintBanner() {
       ) : (
         <span className="truncate">
           Press{" "}
-          <kbd className="rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-[#5eaeff]">
+          <kbd className="rounded-md bg-white/[0.08] px-1.5 py-0.5 font-sans text-[hsl(var(--tk-accent))]">
             {shortcut}
           </kbd>{" "}
           on any page to open TabKnight

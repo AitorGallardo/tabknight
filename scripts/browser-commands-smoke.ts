@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { executeBrowserCommand } from "../src/popup/lib/browser-command-executor";
-import { findBrowserCommands } from "../src/popup/lib/browser-commands";
+import { findBrowserCommands, getBrowserCommand } from "../src/popup/lib/browser-commands";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -8,9 +8,16 @@ function assert(condition: unknown, message: string): asserts condition {
 
 const regular = { id: 7, title: "Example", pinned: false, muted: false };
 const pinnedMuted = { ...regular, pinned: true, muted: true };
+const split = { ...regular, splitViewId: 42 };
 
 assert(findBrowserCommands("", { targetTab: regular }).length === 0, "Empty search must stay tab-only");
+assert(findBrowserCommands(">", { targetTab: regular }).length === 7, "> must reveal every available command");
+assert(findBrowserCommands("> dup", { targetTab: regular })[0]?.id === "duplicate-tab", "> must filter commands");
 assert(findBrowserCommands("close", { targetTab: regular })[0]?.id === "close-tab", "Close must be discoverable");
+assert(getBrowserCommand("close-tab", { targetTab: regular })?.shortcut === "⌥W / Alt+W", "Close shortcut must be visible");
+assert(getBrowserCommand("native-split-view", { targetTab: regular })?.shortcut === "⌘⌥\\", "Split View guide shortcut must be visible");
+assert(getBrowserCommand("separate-split-view", { targetTab: split })?.shortcut === "⌘⌥U / Ctrl+Alt+U", "Unsplit shortcut must be visible for split tabs");
+assert(!getBrowserCommand("separate-split-view", { targetTab: regular }), "Unsplit must hide for regular tabs");
 for (const [query, id] of [
   ["close tab", "close-tab"],
   ["duplicate tab", "duplicate-tab"],
@@ -18,8 +25,11 @@ for (const [query, id] of [
   ["mute tab", "mute-tab"],
   ["reload tab", "reload-tab"],
   ["new tab", "new-tab"],
+  ["split view", "native-split-view"],
+  ["unsplit", "separate-split-view"],
 ] as const) {
-  assert(findBrowserCommands(query, { targetTab: regular })[0]?.id === id, `${query} must find ${id}`);
+  const target = id === "separate-split-view" ? split : regular;
+  assert(findBrowserCommands(query, { targetTab: target })[0]?.id === id, `${query} must find ${id}`);
 }
 assert(findBrowserCommands("pin", { targetTab: regular }).some(({ id }) => id === "pin-tab"), "Pin must be available");
 assert(!findBrowserCommands("pin", { targetTab: pinnedMuted }).some(({ id }) => id === "pin-tab"), "Pin must hide when pinned");
@@ -35,17 +45,21 @@ const api = {
   update: async (id: number, props: { pinned?: boolean; muted?: boolean }) => void calls.push(`update:${id}:${JSON.stringify(props)}`),
   reload: async (id: number) => void calls.push(`reload:${id}`),
   create: async ({ url }: { url: string; active: boolean }) => void calls.push(`create:${url}`),
+  showNativeSplitHint: async (id: number, title: string) => void calls.push(`split-hint:${id}:${title}`),
+  separateSplit: async (id: number) => void calls.push(`separate-split:${id}`),
 };
 
 await executeBrowserCommand("duplicate-tab", regular, api);
 await executeBrowserCommand("pin-tab", regular, api);
 await executeBrowserCommand("mute-tab", regular, api);
 await executeBrowserCommand("reload-tab", regular, api);
+await executeBrowserCommand("native-split-view", regular, api);
+await executeBrowserCommand("separate-split-view", split, api);
 await executeBrowserCommand("new-tab", null, api);
 await executeBrowserCommand("unpin-tab", pinnedMuted, api);
 await executeBrowserCommand("unmute-tab", pinnedMuted, api);
 await executeBrowserCommand("close-tab", regular, api);
-assert(calls.join("|") === 'duplicate:7|update:7:{"pinned":true}|update:7:{"muted":true}|reload:7|create:chrome://newtab/|update:7:{"pinned":false}|update:7:{"muted":false}|remove:7', "Execution must route exactly once");
+assert(calls.join("|") === 'duplicate:7|update:7:{"pinned":true}|update:7:{"muted":true}|reload:7|split-hint:7:Example|separate-split:7|create:chrome://newtab/|update:7:{"pinned":false}|update:7:{"muted":false}|remove:7', "Execution must route exactly once");
 
 let rejected = false;
 try {

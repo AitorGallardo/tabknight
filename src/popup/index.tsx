@@ -1,6 +1,13 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import {
+  ACCENT_PREFERENCE_KEY,
+  DEFAULT_ACCENT_PREFERENCE,
+  applyAccentPreference,
+  getAccentPreference,
+  isAccentPreference,
+} from "./lib/appearance";
 
 // In the tab-preview overlay (?overlay=1), the host page already paints a
 // blurred backdrop + skeleton behind the iframe — the iframe document itself
@@ -13,6 +20,16 @@ import { App } from "./App";
 if (location.search.includes("overlay=1")) {
   document.documentElement.classList.add("tk-overlay");
 }
+
+// Apply zinc synchronously to avoid a stale-color flash, then hydrate the
+// user's optional accent and keep every extension surface in sync.
+applyAccentPreference(DEFAULT_ACCENT_PREFERENCE);
+void getAccentPreference().then(applyAccentPreference);
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local") return;
+  const value = changes[ACCENT_PREFERENCE_KEY]?.newValue;
+  applyAccentPreference(isAccentPreference(value) ? value : DEFAULT_ACCENT_PREFERENCE);
+});
 
 // Apply dark mode based on system preference
 function applyTheme() {

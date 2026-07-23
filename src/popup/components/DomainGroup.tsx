@@ -47,7 +47,7 @@ export function DomainGroup({
           {domain}
         </span>
         {selectedCount > 0 ? (
-          <span className="rounded-full bg-[#0a84ff]/20 px-2 py-0.5 text-[11px] font-medium text-[#5eaeff]">
+          <span className="rounded-full bg-[hsl(var(--tk-accent)/0.16)] px-2 py-0.5 text-[11px] font-medium text-[hsl(var(--tk-accent))]">
             {selectedCount}/{tabs.length}
           </span>
         ) : (

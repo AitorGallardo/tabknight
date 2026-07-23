@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode, SyntheticEvent } from "react";
-import { AppWindow, Bookmark, Clock3, Command, EyeOff, Globe2, Moon, Music, Pause, Pin, Play, Search, Volume2, VolumeX, X } from "lucide-react";
+import { AppWindow, Bookmark, Clock3, Columns2, Command, EyeOff, Globe2, Moon, Music, Pause, Pin, Play, Search, Volume2, VolumeX, X } from "lucide-react";
 import { activateTab, getAllTabs, openUrlAsTab, searchBookmarks, searchHistory, setTabMuted } from "../lib/chrome-api";
 import { executeBrowserCommand } from "../lib/browser-command-executor";
-import { findBrowserCommands } from "../lib/browser-commands";
-import type { BrowserCommand, BrowserCommandTab } from "../lib/browser-commands";
+import { findBrowserCommands, getBrowserCommand, listBrowserCommands } from "../lib/browser-commands";
+import type { BrowserCommand, BrowserCommandId, BrowserCommandTab } from "../lib/browser-commands";
 import { getAllCards, getThumbnail, redactAllCardText } from "../lib/preview/db";
 import { hashUrl } from "../lib/preview/hash";
 import type {
@@ -24,6 +24,7 @@ import { scoreTab } from "../lib/rank";
 import { rankIntentResults } from "../lib/intent-search";
 import type { IntentBookmark, IntentHistoryEntry, IntentResult } from "../lib/intent-search";
 import { useListNavigation } from "../hooks/useListNavigation";
+import { groupCompleteSplitPairs, isNavigatorTabCandidate, separateNativeSplit, splitPartnerTitles, splitViewIdOf } from "../lib/split-view";
 import {
   DEFAULT_PREVIEW_TEXT_PREFERENCE,
   PREVIEW_TEXT_PREFERENCE_KEY,
@@ -42,20 +43,13 @@ interface TabPreviewViewProps {
   invocationId?: string | null;
 }
 
-function postToParent(type: "ready" | "close", invocationId?: string | null): void {
+function postToParent(type: "ready" | "close" | "native-split-hint", invocationId?: string | null, title?: string): void {
   try {
-    window.parent.postMessage({ source: "tabknight-preview", type, invocationId }, "*");
+    window.parent.postMessage({ source: "tabknight-preview", type, invocationId, title }, "*");
   } catch {
     // No parent / cross-origin restriction — safe to ignore.
   }
 }
-
-interface PreviewSessionState {
-  mode: "tabs" | "audio";
-  selectedTabId: number | null;
-}
-
-const PREVIEW_SESSION_KEY = "previewSession";
 
 interface NavigatorTab {
   id: number;
@@ -70,6 +64,19 @@ interface NavigatorTab {
   audible?: boolean;
   muted?: boolean;
   discarded?: boolean;
+  splitViewId?: number | null;
+  splitPartnerTitle?: string;
+  isOrigin?: boolean;
+}
+
+function commandTargetForTab(tab: NavigatorTab): BrowserCommandTab {
+  return {
+    id: tab.id,
+    title: tab.title,
+    pinned: tab.pinned,
+    muted: tab.muted,
+    splitViewId: tab.splitViewId ?? null,
+  };
 }
 
 type PreviewResult =
@@ -90,6 +97,7 @@ interface PlaybackState {
 const PAUSE_DEBOUNCE_MS = 800;
 const HINT_MS = 2500;
 const THUMB_DEBOUNCE_MS = 70;
+const NATIVE_SPLIT_MOTION_MS = 140;
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -115,10 +123,15 @@ const THUMB_CACHE_MAX = 12;
 const THUMB_PREFETCH_CONCURRENCY = 3;
 /** Approximate box height reserved before a row mounts (content-visibility). */
 const ROW_CONTAIN_SIZE = "0 36px";
-/** Rows with a domain subtitle (duplicate titles) render a second line — reserve more height. */
-const ROW_CONTAIN_SIZE_DUPLICATE = "0 44px";
 /** Only pay the content-visibility bookkeeping cost once lists get long. */
 const CONTENT_VISIBILITY_THRESHOLD = 60;
+
+const QUICK_ACTION_CODE_TO_COMMAND: Readonly<Record<string, BrowserCommandId>> = {
+  KeyW: "close-tab",
+  KeyD: "duplicate-tab",
+  KeyR: "reload-tab",
+  KeyN: "new-tab",
+};
 
 /* --------------------------- featured rail spec ---------------------------- */
 const FEATURED_RECENT_COUNT = 5;
@@ -302,21 +315,20 @@ function HeroTopScrim() {
 
 /** Tier 0.5 — replaces the giant favicon fallback with a title/description card. */
 function HeroTypographicCard({ tab, card }: { tab: NavigatorTab; card?: ContentCard }) {
-  const themeColor = card?.themeColor;
   const siteName = card?.siteName || domainOf(tab.url);
   return (
     <div
       className="relative flex h-full flex-col justify-end overflow-hidden p-6"
-      style={{ background: `linear-gradient(155deg, ${themeColor || "#1c1c1e"}33 0%, rgba(10,10,12,0.6) 70%)` }}
+      style={{ background: "linear-gradient(155deg, rgba(82,82,91,0.42) 0%, rgba(9,9,11,0.78) 70%)" }}
     >
       <div
         className="pointer-events-none absolute -left-16 -top-16 h-48 w-48 rounded-full blur-3xl"
-        style={{ background: `${themeColor || "#0a84ff"}22` }}
+        style={{ background: "rgba(161,161,170,0.12)" }}
       />
       <div className="relative">
         <div className="mb-3 flex items-center gap-2">
           <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md bg-white/[0.08]">
-            <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={24} className="h-full w-full" />
+            <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={18} />
           </span>
           <span className="truncate text-[12px] font-medium tracking-[-0.01em] text-white/55">{siteName}</span>
         </div>
@@ -345,8 +357,12 @@ export function TabPreviewView({
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const [currentWindowId, setCurrentWindowId] = useState<number | null>(null);
+  const [currentSplitViewId, setCurrentSplitViewId] = useState<number | null>(null);
+  const [originSplitTarget, setOriginSplitTarget] = useState<BrowserCommandTab | null>(null);
   const [commandTarget, setCommandTarget] = useState<BrowserCommandTab | null>(null);
   const commandInFlightRef = useRef(false);
+  const originTabIdRef = useRef<number | null>(null);
+  const [pairingTabId, setPairingTabId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [intentBookmarks, setIntentBookmarks] = useState<IntentBookmark[]>([]);
   const [intentHistory, setIntentHistory] = useState<IntentHistoryEntry[]>([]);
@@ -370,7 +386,7 @@ export function TabPreviewView({
     const requestId = ++intentRequestRef.current;
     setIntentBookmarks([]);
     setIntentHistory([]);
-    if (!q || mode !== "tabs") return;
+    if (!q || q.startsWith(">") || mode !== "tabs") return;
 
     void searchBookmarks(q)
       .then((nodes) => {
@@ -436,16 +452,6 @@ export function TabPreviewView({
   const [rowHints, setRowHints] = useState<Record<number, string>>({});
   const pauseTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
   const hintTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
-  // Session-restored { mode, selectedTabId } read once on mount; applied after
-  // tabs finish loading. undefined = read still pending, null = nothing saved.
-  // Kept as state (not a ref) so the restore effect re-runs if the async read
-  // resolves after tabs have already loaded.
-  const [savedSession, setSavedSession] = useState<PreviewSessionState | null | undefined>(undefined);
-  const restoredSelectionRef = useRef(false);
-  // Gates the write-through effect until the one-time restore has applied, so
-  // it can't persist a stale pre-restore selection in the same commit.
-  const [persistReady, setPersistReady] = useState(false);
-
   useEffect(() => {
     const load = async () => {
       setLoading(true);
@@ -478,6 +484,20 @@ export function TabPreviewView({
           : allTabs.find(
               (tab) => tab.active && tab.windowId === currentWindowId && !!tab.url && !tab.url.startsWith(selfUrl)
             );
+      originTabIdRef.current = originTab?.id ?? null;
+      const originSplitViewId = originTab ? splitViewIdOf(originTab) : null;
+      setCurrentSplitViewId(originSplitViewId);
+      setOriginSplitTarget(
+        originTab?.id !== undefined && originSplitViewId !== null
+          ? {
+              id: originTab.id,
+              title: originTab.title || originTab.url || "Current tab",
+              pinned: !!originTab.pinned,
+              muted: !!originTab.mutedInfo?.muted,
+              splitViewId: originSplitViewId,
+            }
+          : null
+      );
       setCommandTarget(
         originTab?.id !== undefined
           ? {
@@ -485,19 +505,14 @@ export function TabPreviewView({
               title: originTab.title || originTab.url || "Current tab",
               pinned: !!originTab.pinned,
               muted: !!originTab.mutedInfo?.muted,
+              splitViewId: splitViewIdOf(originTab),
             }
           : null
       );
 
+      const partnerTitles = splitPartnerTitles(allTabs);
       const normalized = allTabs
-        .filter(
-          (tab): tab is chrome.tabs.Tab & { id: number; windowId: number; url: string } =>
-            tab.id !== undefined &&
-            tab.windowId !== undefined &&
-            !!tab.url &&
-            !tab.url.startsWith(selfUrl) &&
-            !(tab.active && tab.windowId === currentWindowId)
-        )
+        .filter((tab) => isNavigatorTabCandidate(tab, selfUrl, originTab?.id ?? null, originSplitViewId))
         .map((tab) => ({
           id: tab.id,
           windowId: tab.windowId,
@@ -511,6 +526,9 @@ export function TabPreviewView({
           audible: tab.audible || false,
           muted: tab.mutedInfo?.muted || false,
           discarded: tab.discarded || false,
+          splitViewId: splitViewIdOf(tab),
+          splitPartnerTitle: partnerTitles.get(tab.id),
+          isOrigin: tab.id === originTab?.id,
         }));
 
       setTabs(normalized);
@@ -519,20 +537,6 @@ export function TabPreviewView({
 
     void load();
   }, [returnToTabId]);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const result = await chrome.storage.session.get(PREVIEW_SESSION_KEY);
-        const saved = (result[PREVIEW_SESSION_KEY] as PreviewSessionState | undefined) ?? null;
-        setSavedSession(saved);
-        if (saved?.mode === "audio") setMode("audio");
-      } catch {
-        // No session storage access — start fresh.
-        setSavedSession(null);
-      }
-    })();
-  }, []);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -697,15 +701,22 @@ export function TabPreviewView({
       .sort((a, b) => {
         if (q) {
           if (b.score !== a.score) return b.score - a.score;
-        } else if (b.tab.lastAccessed !== a.tab.lastAccessed) {
-          return b.tab.lastAccessed - a.tab.lastAccessed;
+        } else {
+          const aInCurrentSplit = currentSplitViewId !== null && a.tab.splitViewId === currentSplitViewId;
+          const bInCurrentSplit = currentSplitViewId !== null && b.tab.splitViewId === currentSplitViewId;
+          if (aInCurrentSplit !== bInCurrentSplit) return aInCurrentSplit ? -1 : 1;
+          if (aInCurrentSplit && bInCurrentSplit) {
+            if (!!a.tab.isOrigin !== !!b.tab.isOrigin) return a.tab.isOrigin ? -1 : 1;
+            return a.tab.index - b.tab.index;
+          }
+          if (b.tab.lastAccessed !== a.tab.lastAccessed) return b.tab.lastAccessed - a.tab.lastAccessed;
         }
         if (a.tab.windowId === currentWindowId && b.tab.windowId !== currentWindowId) return -1;
         if (b.tab.windowId === currentWindowId && a.tab.windowId !== currentWindowId) return 1;
         return a.tab.index - b.tab.index;
       })
       .map(({ tab }) => tab);
-  }, [tabs, query, currentWindowId]);
+  }, [tabs, query, currentWindowId, currentSplitViewId]);
 
   // Featured rail sections (tabs mode, no active search only): "Recent" is the
   // top N of rankedTabs (already lastAccessed-desc when unsearched); "Most
@@ -731,10 +742,13 @@ export function TabPreviewView({
   // Single ordered array driving both rendering and keyboard nav: featured
   // Recent rows, then Most visited, then the bucketed remainder — exactly the
   // visual order. Falls back to the flat ranked list while searching.
-  const orderedTabs = useMemo(
-    () => (featured ? [...featured.recent, ...featured.mostVisited, ...featured.remainder] : rankedTabs),
-    [featured, rankedTabs]
-  );
+  const orderedTabs = useMemo(() => {
+    const ungrouped = featured ? [...featured.recent, ...featured.mostVisited, ...featured.remainder] : rankedTabs;
+    // Keep each native split's two pages adjacent. This makes the visual
+    // half-and-half row match the keyboard order instead of creating a row
+    // whose two focus targets live at unrelated positions in the list.
+    return groupCompleteSplitPairs(ungrouped);
+  }, [featured, rankedTabs]);
   const intentResults = useMemo(
     () =>
       rankIntentResults({
@@ -748,13 +762,27 @@ export function TabPreviewView({
   );
   const featuredRecentCount = featured?.recent.length ?? 0;
   const featuredMostVisitedCount = featured?.mostVisited.length ?? 0;
-
-  // Rows sharing a title (e.g. several GitHub PRs, several Google Docs) get a
-  // domain hint appended so they stay distinguishable at a glance.
-  const duplicateTitleCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const tab of orderedTabs) counts.set(tab.title, (counts.get(tab.title) ?? 0) + 1);
-    return counts;
+  const currentSplitPairCount = useMemo(
+    () =>
+      currentSplitViewId === null
+        ? 0
+        : orderedTabs.filter((tab) => tab.splitViewId === currentSplitViewId).length,
+    [orderedTabs, currentSplitViewId]
+  );
+  const splitPairEntriesByTabId = useMemo(() => {
+    const bySplitId = new Map<number, Array<{ tab: NavigatorTab; index: number }>>();
+    orderedTabs.forEach((tab, index) => {
+      if (tab.splitViewId === null || tab.splitViewId === undefined) return;
+      const entries = bySplitId.get(tab.splitViewId) ?? [];
+      entries.push({ tab, index });
+      bySplitId.set(tab.splitViewId, entries);
+    });
+    const byTabId = new Map<number, Array<{ tab: NavigatorTab; index: number }>>();
+    for (const entries of bySplitId.values()) {
+      if (entries.length !== 2) continue;
+      for (const { tab } of entries) byTabId.set(tab.id, entries);
+    }
+    return byTabId;
   }, [orderedTabs]);
 
   // Audio Playground rail — sticky-audio tabs, filtered by the same search query.
@@ -779,7 +807,7 @@ export function TabPreviewView({
     () => (mode === "tabs" ? findBrowserCommands(query, { targetTab: commandTarget }) : []),
     [mode, query, commandTarget]
   );
-
+  const commandMode = mode === "tabs" && query.trimStart().startsWith(">");
   // Keyboard navigation indexes one typed list so commands and all intent
   // sources preserve their visual order under Arrow keys and Enter.
   const displayList = useMemo<PreviewResult[]>(
@@ -793,7 +821,9 @@ export function TabPreviewView({
             score: 0,
             tab,
           }))
-        : query.trim()
+        : commandMode
+          ? []
+          : query.trim()
           ? intentResults
           : orderedTabs.map((tab) => ({
               type: "tab",
@@ -808,7 +838,7 @@ export function TabPreviewView({
         ...intents.map((intent) => ({ kind: "intent" as const, id: intent.key, intent })),
       ];
     },
-    [mode, audioList, query, intentResults, orderedTabs, commandResults]
+    [mode, audioList, query, intentResults, orderedTabs, commandResults, commandMode]
   );
 
   // Identity re-anchoring: `activeIndex` is a raw index into `displayItems`,
@@ -819,7 +849,7 @@ export function TabPreviewView({
   // this runs after every render (no dep array, same idiom as
   // useRovingCursor's prevKeysRef) so it both re-anchors on a pure identity
   // shift and stays synced when the index moves for any other reason.
-  // Query changes and mode switches (Tab key / session restore) already pick
+  // Query changes and mode switches (Tab key) already pick
   // their own target index elsewhere — those are left alone here (skipped
   // via queryChanged/modeChanged) so this never fights that logic.
   const selectedIdRef = useRef<string | null>(displayList[activeIndex]?.id ?? null);
@@ -853,6 +883,37 @@ export function TabPreviewView({
   const activeIntent = activeResult?.kind === "intent" ? activeResult.intent : undefined;
   const activeTabItem = activeIntent?.type === "tab" ? activeIntent.tab : undefined;
   const activeCommand = activeResult?.kind === "command" ? activeResult.command : undefined;
+  // Quick actions always operate on the highlighted tab. When command search
+  // temporarily replaces tab rows, retain the last highlighted tab as the
+  // command target instead of silently falling back to the page underneath.
+  const selectedCommandTarget = activeTabItem ? commandTargetForTab(activeTabItem) : commandTarget;
+  const splitCommandTarget =
+    selectedCommandTarget?.splitViewId !== null && selectedCommandTarget?.splitViewId !== undefined
+      ? selectedCommandTarget
+      : originSplitTarget;
+  useEffect(() => {
+    if (mode !== "tabs" || !activeTabItem) return;
+    const next = commandTargetForTab(activeTabItem);
+    setCommandTarget((current) =>
+      current?.id === next.id &&
+      current.pinned === next.pinned &&
+      current.muted === next.muted &&
+      current.splitViewId === next.splitViewId
+        ? current
+        : next
+    );
+  }, [mode, activeTabItem?.id, activeTabItem?.pinned, activeTabItem?.muted, activeTabItem?.splitViewId]);
+  const availableCommands = useMemo(
+    () => (mode === "tabs" ? listBrowserCommands({ targetTab: selectedCommandTarget }) : []),
+    [mode, selectedCommandTarget]
+  );
+  const quickActions = useMemo(
+    () =>
+      availableCommands.filter(({ id }) =>
+        ["close-tab", "duplicate-tab", "pin-tab", "unpin-tab", "mute-tab", "unmute-tab"].includes(id)
+      ),
+    [availableCommands]
+  );
   const activeCard = activeTabItem ? cards.get(hashUrl(activeTabItem.url)) : undefined;
   const activeCardHash = activeTabItem ? hashUrl(activeTabItem.url) : null;
   const previewTextSuppressed = !!activeTabItem && shouldSuppressPreviewText(activeTabItem.url, previewTextPreference);
@@ -924,49 +985,6 @@ export function TabPreviewView({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeAudioTab?.id, activeAudioKnownEmpty]);
-
-  // One-time restore of the remembered selection once tabs are loaded. Falls
-  // back "audio" -> "tabs" if the restored audio list would be empty, and
-  // falls back to the existing default ranking if the remembered tab is gone.
-  useEffect(() => {
-    if (loading || savedSession === undefined || restoredSelectionRef.current) return;
-    restoredSelectionRef.current = true;
-    const saved = savedSession;
-    if (!saved) {
-      setPersistReady(true);
-      return;
-    }
-
-    let effectiveMode = saved.mode;
-    if (effectiveMode === "audio" && !tabs.some((tab) => tab.audible || tab.muted)) {
-      effectiveMode = "tabs";
-      setMode("tabs");
-    }
-
-    if (saved.selectedTabId !== null) {
-      if (effectiveMode === "audio") {
-        const list = tabs
-          .filter((tab) => tab.audible || tab.muted)
-          .sort((a, b) => b.lastAccessed - a.lastAccessed);
-        const idx = list.findIndex((tab) => tab.id === saved.selectedTabId);
-        if (idx >= 0) setActiveIndex(idx);
-      } else {
-        const idx = orderedTabs.findIndex((tab) => tab.id === saved.selectedTabId);
-        if (idx >= 0) setActiveIndex(idx);
-      }
-    }
-    setPersistReady(true);
-  }, [loading, tabs, orderedTabs, savedSession]);
-
-  // Write-through: persist { mode, selectedTabId } so the next Cmd+K open
-  // (fresh iframe) can restore where the user left off. Gated until the
-  // one-time restore above has applied, so it never overwrites the saved
-  // session with a stale pre-restore selection.
-  useEffect(() => {
-    if (loading || !persistReady) return;
-    const selectedTabId = activeTabItem?.id ?? null;
-    chrome.storage.session.set({ [PREVIEW_SESSION_KEY]: { mode, selectedTabId } }).catch(() => {});
-  }, [mode, activeTabItem?.id, loading, persistReady]);
 
   // Lazily load the pixel thumbnail for the focused tab (Tier 2). Debounced by
   // a dwell period so arrow-key mashing doesn't fire an IndexedDB read per
@@ -1313,27 +1331,36 @@ export function TabPreviewView({
   );
 
   const runCommand = useCallback(
-    async (command: BrowserCommand) => {
+    async (command: BrowserCommand, targetOverride?: BrowserCommandTab | null) => {
       if (commandInFlightRef.current) return;
       commandInFlightRef.current = true;
       try {
-        let freshTarget = commandTarget;
+        let freshTarget = targetOverride ?? commandTarget;
         if (command.id !== "new-tab") {
-          if (!freshTarget) throw new Error("The current tab is no longer available");
+          if (!freshTarget) throw new Error("The selected tab is no longer available");
           let tab: chrome.tabs.Tab;
           try {
             tab = await chrome.tabs.get(freshTarget.id);
           } catch {
             setCommandTarget(null);
-            throw new Error("The current tab is no longer available");
+            throw new Error("The selected tab is no longer available");
           }
           freshTarget = {
             id: tab.id!,
             title: tab.title || tab.url || "Current tab",
             pinned: !!tab.pinned,
             muted: !!tab.mutedInfo?.muted,
+            splitViewId: splitViewIdOf(tab),
           };
           setCommandTarget(freshTarget);
+        }
+
+        if (command.id === "native-split-view") {
+          setPairingTabId(freshTarget!.id);
+          setAnnouncement(`Preparing Chrome Split View with ${freshTarget!.title}`);
+          if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+            await new Promise<void>((resolve) => setTimeout(resolve, NATIVE_SPLIT_MOTION_MS));
+          }
         }
 
         const result = await executeBrowserCommand(command.id, freshTarget, {
@@ -1342,14 +1369,32 @@ export function TabPreviewView({
           update: async (tabId, properties) => chrome.tabs.update(tabId, properties),
           reload: async (tabId) => chrome.tabs.reload(tabId),
           create: async (properties) => chrome.tabs.create(properties),
+          showNativeSplitHint: async (_tabId, title) => {
+            if (overlay) {
+              postToParent("native-split-hint", invocationId, title);
+              return;
+            }
+            const originTabId = originTabIdRef.current;
+            if (originTabId !== null) {
+              await chrome.tabs
+                .sendMessage(originTabId, { type: "SHOW_NATIVE_SPLIT_HINT", title })
+                .catch(() => {});
+            }
+          },
+          separateSplit: separateNativeSplit,
         });
 
         setAnnouncement(result.announcement);
+        const executedTargetId = freshTarget?.id;
         if (command.id === "pin-tab" || command.id === "unpin-tab") {
-          setCommandTarget((current) => (current ? { ...current, pinned: command.id === "pin-tab" } : current));
+          setCommandTarget((current) =>
+            current && current.id === executedTargetId ? { ...current, pinned: command.id === "pin-tab" } : current
+          );
         } else if (command.id === "mute-tab" || command.id === "unmute-tab") {
           const muted = command.id === "mute-tab";
-          setCommandTarget((current) => (current ? { ...current, muted } : current));
+          setCommandTarget((current) =>
+            current && current.id === executedTargetId ? { ...current, muted } : current
+          );
           setTabs((current) => current.map((tab) => (tab.id === freshTarget?.id ? { ...tab, muted } : tab)));
         } else {
           await dismiss(false);
@@ -1360,10 +1405,11 @@ export function TabPreviewView({
         setAnnouncement("");
         queueMicrotask(() => setAnnouncement(`Command failed: ${detail}`));
       } finally {
+        setPairingTabId(null);
         commandInFlightRef.current = false;
       }
     },
-    [commandTarget, dismiss]
+    [commandTarget, dismiss, invocationId, overlay]
   );
 
   const sendPlayToggle = useCallback(
@@ -1494,6 +1540,47 @@ export function TabPreviewView({
       // A held key firing repeat events would otherwise flap mode (remount
       // flicker on Tab) or race toggles (Space); consume without acting.
       if (event.repeat) return true;
+      if (
+        mode === "tabs" &&
+        event.metaKey &&
+        event.altKey &&
+        !event.ctrlKey &&
+        (event.code === "Slash" || event.code === "Backslash")
+      ) {
+        event.preventDefault();
+        const command = getBrowserCommand("native-split-view", { targetTab: selectedCommandTarget });
+        if (command) void runCommand(command, selectedCommandTarget);
+        return true;
+      }
+      if (
+        mode === "tabs" &&
+        (event.metaKey || event.ctrlKey) &&
+        event.altKey &&
+        event.code === "KeyU"
+      ) {
+        const command = getBrowserCommand("separate-split-view", { targetTab: splitCommandTarget });
+        if (command) {
+          event.preventDefault();
+          void runCommand(command, splitCommandTarget);
+          return true;
+        }
+      }
+      if (mode === "tabs" && fromSearch && event.altKey && !event.metaKey && !event.ctrlKey) {
+        const commandId =
+          event.code === "KeyP"
+            ? selectedCommandTarget?.pinned ? "unpin-tab" : "pin-tab"
+            : event.code === "KeyM"
+              ? selectedCommandTarget?.muted ? "unmute-tab" : "mute-tab"
+              : QUICK_ACTION_CODE_TO_COMMAND[event.code];
+        const command = commandId
+          ? getBrowserCommand(commandId, { targetTab: selectedCommandTarget })
+          : undefined;
+        if (command) {
+          event.preventDefault();
+          void runCommand(command, selectedCommandTarget);
+          return true;
+        }
+      }
       if (mode === "audio" && fromSearch && query === "" && event.key === " ") {
         event.preventDefault();
         toggleSelectedPlay();
@@ -1511,7 +1598,7 @@ export function TabPreviewView({
       }
       return false;
     },
-    [mode, query, enterAudioMode, enterTabsMode, toggleSelectedPlay, toggleSelectedMute]
+    [mode, query, selectedCommandTarget, splitCommandTarget, runCommand, enterAudioMode, enterTabsMode, toggleSelectedPlay, toggleSelectedMute]
   );
 
   const { listRef, registerItem } = useListNavigation({
@@ -1525,6 +1612,17 @@ export function TabPreviewView({
     onEscape,
     preKeyDown,
   });
+
+  // A palette open is a new navigation session: row one is the most recently
+  // visited eligible tab and the rail must never inherit an old scroll offset.
+  const initialPositionResetRef = useRef(false);
+  useEffect(() => {
+    if (loading || initialPositionResetRef.current) return;
+    initialPositionResetRef.current = true;
+    setActiveIndex(0);
+    selectedIdRef.current = displayList[0]?.id ?? null;
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }, [loading, displayList, listRef]);
 
   // Render the left rail with bucket headers (only when not searching).
   const showBuckets = query.trim().length === 0;
@@ -1556,13 +1654,18 @@ export function TabPreviewView({
         <span className="flex items-center gap-1.5">
           <Kbd>esc</Kbd> {query !== "" ? "Clear" : "Close"}
         </span>
-        <span className="flex items-center gap-1.5">Audio is available beside Search</span>
+        <span className="flex items-center gap-1.5"><Kbd>&gt;</Kbd> Commands</span>
+        <span className="flex items-center gap-1.5"><Kbd>⌘⌥\</Kbd> Chrome Split View</span>
+        {splitCommandTarget && (
+          <span className="flex items-center gap-1.5"><Kbd>⌘⌥U</Kbd> Unsplit</span>
+        )}
+        <span className="flex items-center gap-1.5"><Kbd>⌥</Kbd> Quick actions</span>
       </div>
     );
 
   return (
     <div
-      className="tk-preview grid h-full w-full grid-cols-[clamp(260px,36%,360px)_minmax(0,1fr)] overflow-hidden rounded-[18px] border border-black/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(244,244,246,0.92))] text-zinc-950 shadow-[0_32px_90px_rgba(0,0,0,0.28)] backdrop-blur-[30px] dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(28,28,30,0.86),rgba(20,20,22,0.84))] dark:text-[#f5f5f7] dark:shadow-[0_32px_90px_rgba(0,0,0,0.55)]"
+      className="tk-preview tk-frozen-glass grid h-full w-full grid-cols-[clamp(260px,36%,360px)_minmax(0,1fr)] overflow-hidden rounded-[18px] text-zinc-950 dark:text-zinc-50"
       style={{
         fontFamily:
           '-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", system-ui, sans-serif',
@@ -1573,13 +1676,16 @@ export function TabPreviewView({
       </div>
       {/* Left rail: search + grouped tab list */}
       <div className="flex min-h-0 flex-col border-r border-black/[0.07] dark:border-white/[0.07]">
-        <div className="m-2 mb-0 flex items-center gap-2 rounded-xl border border-[#0068d9]/25 bg-white/75 px-3 py-2 shadow-sm ring-2 ring-[#0068d9]/15 focus-within:ring-[#0068d9]/45 dark:border-white/[0.07] dark:bg-white/[0.035] dark:ring-[#0a84ff]/20 dark:focus-within:ring-[#0a84ff]/50">
+        <div className="m-2 mb-0 flex items-center gap-2 rounded-xl border border-[hsl(var(--tk-accent)/0.25)] bg-white/75 px-3 py-2 shadow-sm ring-2 ring-[hsl(var(--tk-accent)/0.15)] focus-within:ring-[hsl(var(--tk-accent)/0.45)] dark:border-white/[0.07] dark:bg-white/[0.035] dark:ring-[hsl(var(--tk-accent)/0.20)] dark:focus-within:ring-[hsl(var(--tk-accent)/0.50)]">
           <Search className="h-4 w-4 shrink-0 text-black/50 dark:text-white/55" />
           <input
             ref={inputRef}
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search tabs, bookmarks, history, or the web…"
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setActiveIndex(0);
+            }}
+            placeholder="Search anything… Type > for commands"
             className="h-8 w-full min-w-0 border-none bg-transparent text-lg font-semibold tracking-[-0.02em] text-black/90 outline-none placeholder:text-black/30 dark:text-white/95 dark:placeholder:text-white/30"
             autoComplete="off"
             spellCheck={false}
@@ -1593,9 +1699,9 @@ export function TabPreviewView({
           <button
               type="button"
               onClick={() => (mode === "audio" ? enterTabsMode() : enterAudioMode())}
-              className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium transition-colors active:scale-[0.97] focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/60 ${
+              className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium transition-colors active:scale-[0.97] focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.60)] ${
                 mode === "audio"
-                  ? "bg-[#0057b8] text-white ring-1 ring-[#0057b8] dark:bg-[#0a84ff]/20 dark:text-[#5eaeff] dark:ring-[#0a84ff]/40"
+                  ? "bg-[hsl(var(--tk-accent-solid))] text-[hsl(var(--tk-accent-foreground))] ring-1 ring-[hsl(var(--tk-accent))]"
                   : "bg-black/[0.06] text-black/70 hover:bg-black/[0.10] dark:bg-white/[0.08] dark:text-white/70 dark:hover:bg-white/[0.12]"
               }`}
               aria-label={`Audio tabs, ${audioList.length} available — ${mode === "audio" ? "show all tabs" : "show audio controls"}`}
@@ -1609,12 +1715,41 @@ export function TabPreviewView({
           <button
             type="button"
             onClick={() => void dismiss(true)}
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-black/[0.06] text-black/55 transition-colors active:scale-[0.97] hover:bg-black/[0.12] hover:text-black/80 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/60 dark:bg-white/[0.06] dark:text-white/55 dark:hover:bg-white/[0.12] dark:hover:text-white/80"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-black/[0.06] text-black/55 transition-colors active:scale-[0.97] hover:bg-black/[0.12] hover:text-black/80 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.60)] dark:bg-white/[0.06] dark:text-white/55 dark:hover:bg-white/[0.12] dark:hover:text-white/80"
             aria-label="Close preview"
           >
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
+
+        {mode === "tabs" && query === "" && quickActions.length > 0 && (
+          <div className="flex items-center gap-1 overflow-x-auto px-2 py-1 text-[10px] text-black/50 dark:text-white/45">
+            <span className="shrink-0 px-1 font-semibold uppercase tracking-[0.08em]">Quick</span>
+            {quickActions.map((command) => (
+              <button
+                key={command.id}
+                type="button"
+                onClick={() => void runCommand(command, selectedCommandTarget)}
+                className="flex shrink-0 items-center gap-1 rounded-md border border-black/10 bg-black/[0.035] px-1.5 py-1 text-black/65 transition-colors hover:bg-black/[0.08] focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.50)] dark:border-white/10 dark:bg-white/[0.035] dark:text-white/65 dark:hover:bg-white/[0.08]"
+                aria-label={`${command.actionLabel}. Shortcut ${command.shortcut}`}
+              >
+                <span>{command.actionLabel.replace(" Tab", "")}</span>
+                {command.shortcut && <Kbd>{command.shortcut.split(" / ")[0]}</Kbd>}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => {
+                setQuery(">");
+                setActiveIndex(0);
+                queueMicrotask(focusInputAtEnd);
+              }}
+              className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[hsl(var(--tk-accent))] hover:bg-[hsl(var(--tk-accent)/0.10)] focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.50)]"
+            >
+              All commands <Kbd>&gt;</Kbd>
+            </button>
+          </div>
+        )}
 
         <div
           ref={listRef}
@@ -1650,7 +1785,7 @@ export function TabPreviewView({
                     onMouseEnter={() => setActiveIndex(index)}
                     style={audioList.length > CONTENT_VISIBILITY_THRESHOLD ? { contentVisibility: "auto", containIntrinsicSize: ROW_CONTAIN_SIZE } : undefined}
                     className={`flex w-full items-center gap-1.5 rounded-[9px] px-1.5 py-1 transition-colors duration-100 ${
-                      active ? "bg-[#0057b8] text-white ring-2 ring-inset ring-white/55 dark:bg-[#0a84ff]" : "text-black/80 hover:bg-black/[0.05] dark:text-white/80 dark:hover:bg-white/[0.06]"
+                      active ? "bg-[hsl(var(--tk-accent-solid))] text-[hsl(var(--tk-accent-foreground))]" : "text-black/80 hover:bg-black/[0.05] dark:text-white/80 dark:hover:bg-white/[0.06]"
                     } ${tab.muted ? "opacity-60" : ""}`}
                   >
                     <button
@@ -1661,14 +1796,14 @@ export function TabPreviewView({
                       ref={registerItem(index)}
                       type="button"
                       onClick={() => void activate(tab)}
-                      className="flex min-w-0 flex-1 items-center gap-2 text-left focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-white/70"
+                      className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:bg-white/[0.12]"
                     >
                       <span
-                        className={`grid h-5 w-5 shrink-0 place-items-center overflow-hidden rounded-[5px] ${
+                        className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-[6px] ${
                           active ? "bg-white/20" : "bg-white/[0.08] text-white/80"
                         }`}
                       >
-                        <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={24} className="h-full w-full" />
+                        <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={18} />
                       </span>
                       <AudioEq playing={playing} />
                       <span className="min-w-0 flex-1">
@@ -1731,7 +1866,7 @@ export function TabPreviewView({
               )}
               {!loading && displayList.length === 0 && (
                 <div className="px-3 py-2 text-xs text-white/55">
-                  {query.trim() ? "No matching tabs or commands" : "No other tabs open"}
+                  {commandMode ? "No matching commands" : query.trim() ? "No matching destinations" : "No other tabs open"}
                 </div>
               )}
 
@@ -1755,7 +1890,7 @@ export function TabPreviewView({
                     onMouseEnter={() => setActiveIndex(index)}
                     onClick={() => void runCommand(command)}
                     className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${
-                      active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]"
+                      active ? "bg-[hsl(var(--tk-accent-solid))] text-[hsl(var(--tk-accent-foreground))]" : "text-white/80 hover:bg-white/[0.06]"
                     }`}
                   >
                     <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-md ${active ? "bg-white/20" : "bg-white/[0.08]"}`}>
@@ -1771,7 +1906,7 @@ export function TabPreviewView({
                   </button>
                 );
               })}
-              {!loading && query.trim() &&
+              {!loading && !commandMode && query.trim() &&
                 intentResults.map((item, index) => {
                   const resultIndex = commandResults.length + index;
                   const active = resultIndex === activeIndex;
@@ -1779,7 +1914,7 @@ export function TabPreviewView({
                   const url = item.type === "tab" ? item.tab.url : item.url;
                   const icon =
                     item.type === "tab" ? (
-                      <Favicon pageUrl={item.tab.url} favIconUrl={item.tab.favIconUrl} size={24} className="h-full w-full" />
+                      <Favicon pageUrl={item.tab.url} favIconUrl={item.tab.favIconUrl} size={18} />
                     ) : item.type === "bookmark" ? (
                       <Bookmark className="h-3.5 w-3.5" />
                     ) : item.type === "history" ? (
@@ -1799,8 +1934,8 @@ export function TabPreviewView({
                       type="button"
                       onMouseEnter={() => setActiveIndex(resultIndex)}
                       onClick={() => void executeIntent(item)}
-                      className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${
-                        active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]"
+                      className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left transition-colors duration-100 ${item.type === "tab" && pairingTabId === item.tab.id ? "tk-pairing" : ""} ${
+                        active ? "bg-[hsl(var(--tk-accent-solid))] text-[hsl(var(--tk-accent-foreground))]" : "text-white/80 hover:bg-white/[0.06]"
                       }`}
                     >
                       <span className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${active ? "bg-white/20" : "bg-white/[0.08]"}`}>
@@ -1812,11 +1947,22 @@ export function TabPreviewView({
                         </span>
                         <span className={`block truncate text-[11px] ${active ? "text-white/70" : "text-white/45"}`}>
                           {domainOf(url)}
+                          {item.type === "tab" && item.tab.splitPartnerTitle
+                            ? ` · ${item.tab.isOrigin ? "Current view · " : ""}Split with ${item.tab.splitPartnerTitle}`
+                            : ""}
                         </span>
                       </span>
-                      <span className={`shrink-0 text-[10px] font-medium ${active ? "text-white/80" : "text-white/40"}`}>
-                        {item.sourceLabel}
-                      </span>
+                      {item.type === "tab" && pairingTabId === item.tab.id ? (
+                        <Columns2 className="h-3.5 w-3.5 shrink-0 text-white" aria-hidden="true" />
+                      ) : item.type === "tab" && item.tab.splitViewId !== null && item.tab.splitViewId !== undefined ? (
+                        <span className={`flex shrink-0 items-center gap-1 text-[10px] font-medium ${active ? "text-white/85" : "text-white/45"}`}>
+                          <Columns2 className="h-3 w-3" /> Split
+                        </span>
+                      ) : (
+                        <span className={`shrink-0 text-[10px] font-medium ${active ? "text-white/80" : "text-white/40"}`}>
+                          {item.sourceLabel}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
@@ -1824,13 +1970,111 @@ export function TabPreviewView({
               {!loading && !query.trim() &&
                 orderedTabs.map((tab, index) => {
                   const resultIndex = commandResults.length + index;
+                  const splitPairEntries = splitPairEntriesByTabId.get(tab.id);
+                  const splitPairStart = splitPairEntries?.[0];
+                  const splitPairEnd = splitPairEntries?.[1];
+                  if (splitPairEnd && index === splitPairEnd.index) return null;
+                  if (splitPairStart && splitPairEnd && index === splitPairStart.index) {
+                    const isCurrentPair = currentSplitViewId !== null && tab.splitViewId === currentSplitViewId;
+                    const inRecentSection = index < featuredRecentCount;
+                    const inMostVisitedSection =
+                      !inRecentSection && index < featuredRecentCount + featuredMostVisitedCount;
+                    let pairHeader: string | null = null;
+                    if (isCurrentPair) {
+                      pairHeader = "Current split view";
+                    } else if (showBuckets && inRecentSection && index === 0) {
+                      pairHeader = "Recent";
+                    } else if (showBuckets && inMostVisitedSection && index === featuredRecentCount) {
+                      pairHeader = "Most visited";
+                    } else if (!inRecentSection && !inMostVisitedSection) {
+                      const bucket = bucketLabel(tab.lastAccessed, now);
+                      if (showBuckets && bucket !== lastBucket) pairHeader = bucket;
+                      if (showBuckets) lastBucket = bucket;
+                    }
+                    const pairActive = [splitPairStart.index, splitPairEnd.index].some(
+                      (pairIndex) => commandResults.length + pairIndex === activeIndex
+                    );
+                    return (
+                      <div key={`split:${tab.splitViewId}`}>
+                        {pairHeader && (
+                          <div className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-black/40 dark:text-white/30">
+                            {pairHeader}
+                          </div>
+                        )}
+                        <div
+                          className={`group/split relative grid grid-cols-2 gap-px overflow-hidden rounded-[10px] transition-colors duration-100 ${
+                            pairActive
+                              ? "bg-[hsl(var(--tk-accent-solid))]"
+                              : "bg-[hsl(var(--tk-accent)/0.07)] hover:bg-[hsl(var(--tk-accent)/0.12)] dark:hover:bg-white/[0.07]"
+                          }`}
+                          aria-label={isCurrentPair ? "Current split view" : "Split view pair"}
+                        >
+                          {[splitPairStart, splitPairEnd].map(({ tab: pairTab, index: pairIndex }) => {
+                            const pairResultIndex = commandResults.length + pairIndex;
+                            const halfActive = pairResultIndex === activeIndex;
+                            return (
+                              <button
+                                key={pairTab.id}
+                                ref={registerItem(pairResultIndex)}
+                                id={resultDomId({ kind: "intent", id: `tab:${pairTab.id}`, intent: { type: "tab", key: `tab:${pairTab.id}`, sourceLabel: "Open tab", actionLabel: "Switch to tab", score: 0, tab: pairTab } })}
+                                role="option"
+                                aria-selected={halfActive}
+                                aria-label={`${pairTab.title}. ${pairTab.isOrigin ? "Current side of split view. " : "Other side of split view. "}Enter to focus.`}
+                                type="button"
+                                onMouseEnter={() => setActiveIndex(pairResultIndex)}
+                                onClick={() => void activate(pairTab)}
+                                className={`flex min-w-0 items-center gap-2 px-2 py-2 text-left transition-colors duration-100 focus-visible:outline-none ${
+                                  halfActive ? "bg-white/[0.12] text-white" : pairActive ? "text-white/78" : "text-black/75 dark:text-white/75"
+                                } ${
+                                  pairTab.discarded ? "opacity-[0.55]" : ""
+                                }`}
+                              >
+                                <span className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${pairActive ? "bg-white/20" : "bg-white/[0.10]"}`}>
+                                  <Favicon pageUrl={pairTab.url} favIconUrl={pairTab.favIconUrl} size={18} />
+                                </span>
+                                <span className="min-w-0 flex-1 pr-3">
+                                  <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">{pairTab.title}</span>
+                                  <span className={`block truncate text-[10px] ${pairActive ? "text-white/65" : "text-black/45 dark:text-white/40"}`}>
+                                    {pairTab.isOrigin ? "Current side" : domainOf(pairTab.url)}
+                                  </span>
+                                </span>
+                              </button>
+                            );
+                          })}
+                          <span
+                            aria-hidden="true"
+                            className={`pointer-events-none absolute bottom-1 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-md bg-zinc-900/90 px-1.5 py-0.5 text-[9px] font-medium text-white shadow-sm backdrop-blur-sm transition-opacity duration-100 motion-reduce:transition-none ${
+                              pairActive ? "opacity-100" : "opacity-0 group-hover/split:opacity-100"
+                            }`}
+                          >
+                            <span>⌘⌥U</span>
+                            <span className="text-white/60">Unsplit</span>
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  }
                   const inRecentSection = index < featuredRecentCount;
                   const inMostVisitedSection =
                     !inRecentSection && index < featuredRecentCount + featuredMostVisitedCount;
                   const isFeatured = inRecentSection || inMostVisitedSection;
 
                   let header: string | null = null;
-                  if (showBuckets && inRecentSection && index === 0) {
+                  if (
+                    showBuckets &&
+                    currentSplitViewId !== null &&
+                    tab.splitViewId === currentSplitViewId &&
+                    index === 0
+                  ) {
+                    header = "Current split view";
+                  } else if (
+                    showBuckets &&
+                    currentSplitPairCount > 0 &&
+                    index === currentSplitPairCount &&
+                    inRecentSection
+                  ) {
+                    header = "Recent";
+                  } else if (showBuckets && inRecentSection && index === 0) {
                     header = "Recent";
                   } else if (showBuckets && inMostVisitedSection && index === featuredRecentCount) {
                     header = "Most visited";
@@ -1841,7 +2085,6 @@ export function TabPreviewView({
                   }
 
                   const active = resultIndex === activeIndex;
-                  const isDuplicateTitle = (duplicateTitleCounts.get(tab.title) ?? 0) > 1;
                   // Entrance stagger only on the featured rail's first-ever
                   // paint (never on re-rank) and only the first 8 rows, so a
                   // long "Recent" + "Most visited" combo doesn't tail off
@@ -1859,6 +2102,7 @@ export function TabPreviewView({
                         ref={registerItem(resultIndex)}
                         id={resultDomId({ kind: "intent", id: `tab:${tab.id}`, intent: { type: "tab", key: `tab:${tab.id}`, sourceLabel: "Open tab", actionLabel: "Switch to tab", score: 0, tab } })}
                         role="option"
+                        data-result-kind="tab"
                         aria-selected={active}
                         type="button"
                         onMouseEnter={() => setActiveIndex(resultIndex)}
@@ -1867,38 +2111,42 @@ export function TabPreviewView({
                           ...(orderedTabs.length > CONTENT_VISIBILITY_THRESHOLD
                             ? {
                                 contentVisibility: "auto",
-                                containIntrinsicSize: isDuplicateTitle ? ROW_CONTAIN_SIZE_DUPLICATE : ROW_CONTAIN_SIZE,
+                                containIntrinsicSize: ROW_CONTAIN_SIZE,
                               }
                             : undefined),
                           ...(showEntrance ? { animationDelay: `${index * 18}ms` } : undefined),
                         }}
-                        aria-label={`${tab.title}. Open tab. Switch.${tab.pinned ? " Pinned." : ""}${tab.audible ? " Playing audio." : ""}${tab.muted ? " Muted." : ""}${tab.discarded ? " Discarded." : ""}`}
-                        className={`flex w-full items-center gap-2 rounded-[9px] px-2 py-1 text-left transition-colors duration-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/70 ${showEntrance ? "tk-row-in" : ""} ${
+                        aria-label={`${tab.title}. Open tab. Switch.${tab.isOrigin ? " Current view." : ""}${tab.splitPartnerTitle ? ` Split with ${tab.splitPartnerTitle}.` : ""}${tab.pinned ? " Pinned." : ""}${tab.audible ? " Playing audio." : ""}${tab.muted ? " Muted." : ""}${tab.discarded ? " Discarded." : ""}`}
+                        className={`flex h-9 w-full items-center gap-2 rounded-[9px] px-2 text-left transition-colors duration-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.70)] ${showEntrance ? "tk-row-in" : ""} ${pairingTabId === tab.id ? "tk-pairing" : ""} ${
                           active
-                            ? "bg-[#0057b8] text-white ring-2 ring-inset ring-white/55 shadow-sm dark:bg-[#0a84ff]"
+                            ? "bg-[hsl(var(--tk-accent-solid))] text-[hsl(var(--tk-accent-foreground))]"
                             : isFeatured
-                              ? "bg-[#0068d9]/[0.07] text-black/80 hover:bg-[#0068d9]/[0.12] dark:text-white/80"
+                              ? "bg-[hsl(var(--tk-accent)/0.07)] text-black/80 hover:bg-[hsl(var(--tk-accent)/0.12)] dark:text-white/80"
                               : "text-black/80 hover:bg-black/[0.05] dark:text-white/80 dark:hover:bg-white/[0.06]"
                         } ${tab.discarded ? "opacity-[0.55]" : ""}`}
                       >
                         <span
-                          className={`grid h-5 w-5 shrink-0 place-items-center overflow-hidden rounded-[5px] ${
+                          data-favicon-frame
+                          className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-[6px] ${
                             active ? "bg-white/20" : "bg-white/[0.08] text-white/80"
                           }`}
                         >
-                          <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={24} className="h-full w-full" />
+                          <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={18} />
                         </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">
+                        <span data-tab-copy className="min-w-0 flex-1">
+                          <span data-tab-title className="block truncate text-[13px] font-medium tracking-[-0.01em]">
                             {highlightTitle(tab.title, query, active)}
                           </span>
-                          {isDuplicateTitle && (
-                            <span className={`block truncate text-[11px] ${active ? "text-white/85" : "text-black/50 dark:text-white/45"}`}>
-                              {domainOf(tab.url)}
-                            </span>
-                          )}
                         </span>
-                        <ResultLabels active={active} />
+                        {pairingTabId === tab.id ? (
+                          <Columns2 className="h-3.5 w-3.5 shrink-0 text-white" aria-hidden="true" />
+                        ) : tab.splitViewId !== null && tab.splitViewId !== undefined ? (
+                          <span className={`flex shrink-0 items-center gap-1 text-[10px] font-medium ${active ? "text-white/85" : "text-[hsl(var(--tk-accent))]"}`}>
+                            <Columns2 className="h-3 w-3" /> Split
+                          </span>
+                        ) : (
+                          <ResultLabels active={active} />
+                        )}
                         <RowGlyphs tab={tab} currentWindowId={currentWindowId} active={active} />
                       </button>
                     </div>
@@ -1917,13 +2165,13 @@ export function TabPreviewView({
           <div className="flex h-full min-h-0 flex-col">
             <div className="grid flex-1 place-items-center px-12 text-center">
               <div className="max-w-sm">
-                <span className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-[#0a84ff]/15 text-[#5eaeff] ring-1 ring-[#0a84ff]/30">
+                <span className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-[hsl(var(--tk-accent)/0.15)] text-[hsl(var(--tk-accent))] ring-1 ring-[hsl(var(--tk-accent)/0.30)]">
                   <Command className="h-5 w-5" />
                 </span>
                 <h2 className="mt-4 text-xl font-semibold tracking-[-0.02em] text-white/95">{activeCommand.label}</h2>
                 <p className="mt-2 text-[13px] leading-relaxed text-white/50">{activeCommand.description}</p>
-                {commandTarget && activeCommand.id !== "new-tab" && (
-                  <p className="mt-3 truncate text-[11px] text-white/35">Current: {commandTarget.title}</p>
+                {selectedCommandTarget && activeCommand.id !== "new-tab" && (
+                  <p className="mt-3 truncate text-[11px] text-white/35">Selected: {selectedCommandTarget.title}</p>
                 )}
               </div>
             </div>
@@ -1945,7 +2193,7 @@ export function TabPreviewView({
                       </div>
                       <div className="text-lg font-semibold text-white/90">{activeIntent.title}</div>
                       <div className="mt-2 break-all text-xs leading-relaxed text-white/45">{activeIntent.url}</div>
-                      <div className="mt-4 text-xs font-medium text-[#5eaeff]">{activeIntent.actionLabel} · Enter</div>
+                      <div className="mt-4 text-xs font-medium text-[hsl(var(--tk-accent))]">{activeIntent.actionLabel} · Enter</div>
                     </div>
                   </div>
                 ) : (
@@ -1974,7 +2222,7 @@ export function TabPreviewView({
                 aspectRatio: HERO_ASPECT,
                 background:
                   heroTier === "thumb-contain"
-                    ? `${activeCard?.themeColor ?? "#1c1c1e"}22`
+                    ? "rgba(63,63,70,0.28)"
                     : "rgba(255,255,255,0.03)",
               }}
             >
@@ -2038,7 +2286,7 @@ export function TabPreviewView({
                   <div
                     className="h-full w-full"
                     style={{
-                      background: `linear-gradient(155deg, ${activeCard?.themeColor ?? "#1c1c1e"}33 0%, rgba(10,10,12,0.6) 70%)`,
+                      background: "linear-gradient(155deg, rgba(82,82,91,0.42) 0%, rgba(9,9,11,0.78) 70%)",
                     }}
                   />
                 )}
@@ -2061,6 +2309,14 @@ export function TabPreviewView({
                 {activeTabItem.title}
               </h2>
               <div className="mt-1 truncate text-xs text-black/50 dark:text-white/45">{activeTabItem.url}</div>
+              {activeTabItem.splitPartnerTitle && (
+                <div className="mt-2 inline-flex max-w-full items-center gap-1.5 rounded-md border border-[hsl(var(--tk-accent)/0.20)] bg-[hsl(var(--tk-accent)/0.07)] px-2 py-1 text-[11px] text-[hsl(var(--tk-accent))] dark:border-[hsl(var(--tk-accent)/0.25)] dark:bg-[hsl(var(--tk-accent)/0.10)]">
+                  <Columns2 className="h-3 w-3 shrink-0" />
+                  <span className="truncate">
+                    {activeTabItem.isOrigin ? "Current view · " : ""}Split with {activeTabItem.splitPartnerTitle}
+                  </span>
+                </div>
+              )}
 
               {activeAudioTab && mediaStatus?.tabId === activeAudioTab.id && (
                 <MediaNowPlaying tab={activeAudioTab} status={mediaStatus.result} />
@@ -2095,7 +2351,7 @@ export function TabPreviewView({
                           setRevealedTextHash(activeCardHash);
                           setAnnouncement("Page text shown for this preview only");
                         }}
-                        className="mt-2 rounded-md border border-black/15 bg-white/60 px-2 py-1 text-[11px] font-medium text-black/75 hover:bg-white focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[#0068d9]/60 dark:border-white/15 dark:bg-white/[0.07] dark:text-white/75 dark:hover:bg-white/[0.12]"
+                        className="mt-2 rounded-md border border-black/15 bg-white/60 px-2 py-1 text-[11px] font-medium text-black/75 hover:bg-white focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.60)] dark:border-white/15 dark:bg-white/[0.07] dark:text-white/75 dark:hover:bg-white/[0.12]"
                       >
                         Show for this preview
                       </button>

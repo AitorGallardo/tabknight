@@ -5,6 +5,7 @@
 //   on restricted pages where a content script can't be injected.
 
 import { updateBadgeCount } from "../popup/lib/chrome-api";
+import { ACCENT_PREFERENCE_KEY } from "../popup/lib/appearance";
 import { getThumbnail, putCard, pruneCards } from "../popup/lib/preview/db";
 import { hashUrl } from "../popup/lib/preview/hash";
 import { captureActiveTabThumbnail, isCapturableUrl } from "../popup/lib/preview/thumbnail";
@@ -608,6 +609,10 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
     });
 });
 
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === "local" && ACCENT_PREFERENCE_KEY in changes) void updateBadgeCount();
+});
+
 // First-run discoverability: once the user actually uses the shortcut, the
 // popup's hint banner never needs to show again.
 async function markCmdKHintDismissed(): Promise<void> {
@@ -675,10 +680,10 @@ async function handleNavigatorCommand(activeTab: chrome.tabs.Tab): Promise<void>
   await markCmdKHintDismissed();
 }
 
-// Cmd+K — serialize each focused window so rapid presses cannot race hosts or
-// create multiple fallbacks. Other windows remain independent.
+// Both palette shortcuts share one serialized path per focused window, so
+// rapid presses cannot race hosts or create multiple fallbacks.
 chrome.commands.onCommand.addListener(async (command) => {
-  if (command !== "open_tab_navigator") return;
+  if (command !== "open_tab_navigator" && command !== "open_tab_navigator_fallback") return;
   try {
     const [activeTab] = await chrome.tabs.query({
       active: true,

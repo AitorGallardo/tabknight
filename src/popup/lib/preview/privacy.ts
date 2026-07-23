@@ -4,9 +4,9 @@ const PREVIEW_TEXT_REDACTION_VERSION = 1;
 
 export type PreviewTextPreference = "sensitive" | "always-hide" | "always-show";
 
-// Page text is opt-in. Titles, URLs, site names, images, and screenshots are
-// separate preview data and remain available when this is selected.
-export const DEFAULT_PREVIEW_TEXT_PREFERENCE: PreviewTextPreference = "always-hide";
+// Rich local previews are the default. Users can still hide text everywhere
+// or only on sensitive-looking URLs from Options.
+export const DEFAULT_PREVIEW_TEXT_PREFERENCE: PreviewTextPreference = "always-show";
 
 const SENSITIVE_HOST_PARTS = [
   "account",

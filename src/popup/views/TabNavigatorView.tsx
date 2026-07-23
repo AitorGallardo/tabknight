@@ -243,7 +243,7 @@ export function TabNavigatorView({
 
   return (
     <div
-      className="flex h-full w-full flex-col text-[#f4f5f8]"
+      className="flex h-full w-full flex-col text-zinc-100"
       onMouseDownCapture={(event) => {
         const target = event.target as HTMLElement | null;
         if (!target || target.closest("button") || target.tagName === "INPUT") return;
@@ -305,7 +305,7 @@ export function TabNavigatorView({
           !error &&
           items.map((item, index) => {
             const active = index === activeIndex;
-            const rowClass = active ? "bg-[#0a84ff] text-white" : "text-white/80 hover:bg-white/[0.06]";
+            const rowClass = active ? "bg-[hsl(var(--tk-accent-solid))] text-[hsl(var(--tk-accent-foreground))]" : "text-white/80 hover:bg-white/[0.06]";
             const tileClass = active ? "bg-white/20" : "bg-white/[0.08] text-white/80";
             const subClass = active ? "text-white/70" : "text-white/45";
 
@@ -324,7 +324,7 @@ export function TabNavigatorView({
               >
                 <span className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${tileClass}`}>
                   {item.type === "tab" ? (
-                    <Favicon pageUrl={item.tab.url} favIconUrl={item.tab.favIconUrl} size={24} className="h-full w-full object-cover" />
+                    <Favicon pageUrl={item.tab.url} favIconUrl={item.tab.favIconUrl} size={18} />
                   ) : item.type === "bookmark" ? <Bookmark className="h-3.5 w-3.5" /> : item.type === "history" ? <Clock3 className="h-3.5 w-3.5" /> : item.type === "search" ? <Search className="h-3.5 w-3.5" /> : <Globe2 className="h-3.5 w-3.5" />}
                 </span>
                 <span className="min-w-0 flex-1">

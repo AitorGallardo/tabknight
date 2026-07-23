@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
+import { visibleItemScrollTop } from "../lib/list-scroll";
 
 export interface ScrollInsets {
   top: number;
@@ -72,23 +73,26 @@ export function useListNavigation({
     const list = listRef.current;
     const item = itemRefs.current[activeIndex];
     if (!list || !item) return;
-    const itemTop = item.offsetTop;
-    const itemBottom = itemTop + item.offsetHeight;
-    if (itemTop < list.scrollTop + scrollInsets.top) {
-      list.scrollTop = Math.max(0, itemTop - scrollInsets.top);
-    } else if (itemBottom > list.scrollTop + list.clientHeight - scrollInsets.bottom) {
-      list.scrollTop = Math.min(
-        list.scrollHeight - list.clientHeight,
-        itemBottom - list.clientHeight + scrollInsets.bottom
-      );
-    }
+    const listRect = list.getBoundingClientRect();
+    const itemRect = item.getBoundingClientRect();
+    list.scrollTop = visibleItemScrollTop({
+      scrollTop: list.scrollTop,
+      scrollHeight: list.scrollHeight,
+      clientHeight: list.clientHeight,
+      listTop: listRect.top,
+      listBottom: listRect.bottom,
+      itemTop: itemRect.top,
+      itemBottom: itemRect.bottom,
+      insetTop: scrollInsets.top,
+      insetBottom: scrollInsets.bottom,
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeIndex, itemCount]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (preKeyDown?.(event)) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
 
       const target = event.target as HTMLElement | null;
       const targetIsInput =

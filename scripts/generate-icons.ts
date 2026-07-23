@@ -14,7 +14,7 @@ function generateSvg(size: number): string {
   const cornerRadius = Math.floor(size * 0.15);
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
-  <rect x="${padding}" y="${padding}" width="${iconSize}" height="${iconSize}" rx="${cornerRadius}" fill="#6366f1"/>
+  <rect x="${padding}" y="${padding}" width="${iconSize}" height="${iconSize}" rx="${cornerRadius}" fill="#52525b"/>
   <rect x="${padding + iconSize * 0.2}" y="${padding + iconSize * 0.2}" width="${iconSize * 0.6}" height="${iconSize * 0.15}" rx="${cornerRadius * 0.3}" fill="white"/>
   <rect x="${padding + iconSize * 0.2}" y="${padding + iconSize * 0.45}" width="${iconSize * 0.6}" height="${iconSize * 0.15}" rx="${cornerRadius * 0.3}" fill="white" opacity="0.7"/>
   <rect x="${padding + iconSize * 0.2}" y="${padding + iconSize * 0.7}" width="${iconSize * 0.4}" height="${iconSize * 0.15}" rx="${cornerRadius * 0.3}" fill="white" opacity="0.4"/>

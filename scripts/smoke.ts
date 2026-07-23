@@ -7,12 +7,15 @@
  *
  *   1. The preview overlay injects exactly once and focuses its frame.
  *   2. Responsive light/dark, wide/narrow, and accessibility contracts hold.
- *   3. Host-page spoofed lifecycle messages are ignored.
- *   4. Popup and standalone sizing stay within their viewports.
- *   5. Universal intent search renders all available typed sources.
- *   6. The privacy options page loads with page text disabled by default.
- *   7. The overlay closes cleanly.
- *   8. A restricted-page fallback explains itself, focuses search, and Escape
+ *   3. Palette starts at the newest tab and Alt/Option+W closes that selection.
+ *   4. Cmd+Option+\\ closes the palette and guides Chrome's native Split View
+ *      without creating or moving any window.
+ *   5. Host-page spoofed lifecycle messages are ignored.
+ *   6. Popup and standalone sizing stay within their viewports.
+ *   7. Universal intent search renders all available typed sources.
+ *   8. The privacy options page loads with rich page text enabled by default.
+ *   9. The overlay closes cleanly.
+ *   10. A restricted-page fallback explains itself, focuses search, and Escape
  *      closes it while restoring the origin tab.
  *
  * Chrome >= 137 (stable) ignores --load-extension, so the extension is loaded
@@ -494,6 +497,12 @@ async function main(): Promise<number> {
                 `(() => {
               const combo = document.querySelector('[role="combobox"]');
               const selected = document.querySelector('[role="option"][aria-selected="true"]');
+              const selectedStyle = selected ? getComputedStyle(selected) : null;
+              const tabRows = Array.from(document.querySelectorAll('[data-result-kind="tab"]')).slice(0, 5);
+              const faviconFrame = tabRows[0]?.querySelector('[data-favicon-frame]');
+              const faviconImage = faviconFrame?.querySelector('img');
+              const frameRect = faviconFrame?.getBoundingClientRect();
+              const imageRect = faviconImage?.getBoundingClientRect();
               const audioControl = Array.from(document.querySelectorAll('button')).find((el) => el.textContent?.includes('Audio'));
               audioControl?.focus();
               const nativeEnter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
@@ -506,15 +515,27 @@ async function main(): Promise<number> {
                 sourceLabels: Array.from(document.querySelectorAll('span')).some((el) => el.textContent?.trim() === 'Tab'),
                 audioControl: !!audioControl,
                 controlsKeepNativeKeys,
-                privacyCopy: document.body.textContent?.includes('Page text not collected') ?? false,
-                selectedBackground: selected ? getComputedStyle(selected).backgroundColor : null,
+                commandHint: document.querySelector('input')?.getAttribute('placeholder')?.includes('Type > for commands') ?? false,
+                selectedBackground: selectedStyle?.backgroundColor ?? null,
+                selectedBoxShadow: selectedStyle?.boxShadow ?? null,
+                selectedBorderWidth: selectedStyle?.borderWidth ?? null,
+                tabRowHeights: tabRows.map((row) => row.getBoundingClientRect().height),
+                singleLineTabRows: tabRows.length >= 2 && tabRows.every((row) => row.querySelector('[data-tab-copy]')?.children.length === 1),
+                faviconFrame: frameRect && imageRect ? {
+                  frame: [frameRect.width, frameRect.height],
+                  image: [imageRect.width, imageRect.height],
+                  centerDelta: [
+                    Math.abs((frameRect.left + frameRect.width / 2) - (imageRect.left + imageRect.width / 2)),
+                    Math.abs((frameRect.top + frameRect.height / 2) - (imageRect.top + imageRect.height / 2)),
+                  ],
+                } : null,
                 noHorizontalOverflow: document.documentElement.scrollWidth <= innerWidth,
                 viewport: [innerWidth, innerHeight],
               });
             })()`
               )
             );
-            return observed.hasCombo && observed.activeDescendant && observed.sourceLabels && observed.privacyCopy
+            return observed.hasCombo && observed.activeDescendant && observed.sourceLabels && observed.commandHint
               ? observed
               : null;
           },
@@ -527,7 +548,15 @@ async function main(): Promise<number> {
           !state.sourceLabels ||
           !state.audioControl ||
           !state.controlsKeepNativeKeys ||
-          !state.privacyCopy ||
+          !state.commandHint ||
+          state.selectedBoxShadow !== "none" ||
+          state.selectedBorderWidth !== "0px" ||
+          !state.singleLineTabRows ||
+          state.tabRowHeights.some((height) => Math.abs(height - 36) > 0.5) ||
+          !state.faviconFrame ||
+          state.faviconFrame.frame.some((size) => Math.abs(size - 24) > 0.5) ||
+          state.faviconFrame.image.some((size) => Math.abs(size - 18) > 0.5) ||
+          state.faviconFrame.centerDelta.some((delta) => delta > 0.5) ||
           !state.noHorizontalOverflow ||
           state.viewport[0] !== scenario.width ||
           state.viewport[1] !== scenario.height
@@ -551,7 +580,221 @@ async function main(): Promise<number> {
       });
     }
 
-    /* -------------------- TEST 2: forged lifecycle ignored -------------------- */
+    /* ------------- TEST 3: fresh top selection + shortcut target ------------ */
+    try {
+      const shortcutTargetId = await evaluate(
+        sw,
+        `(async () => {
+          const tab = await chrome.tabs.create({ url: "https://example.net/", active: true });
+          await chrome.storage.session.set({ previewSession: { mode: "audio", selectedTabId: ${seededTabId} } });
+          return tab.id;
+        })()`
+      );
+      await waitFor(
+        async () =>
+          evaluate(
+            sw,
+            `(async () => {
+              const tab = await chrome.tabs.get(${shortcutTargetId});
+              return tab.status === "complete";
+            })()`
+          ),
+        { timeoutMs: 10000, intervalMs: 200, label: "shortcut target to finish loading" }
+      );
+
+      const shortcutTarget = await jsonNew(port, `chrome-extension://${extensionId}/popup/index.html?standalone=1`);
+      if (!shortcutTarget.webSocketDebuggerUrl) throw new Error("shortcut target has no debugger URL");
+      const shortcutCdp = new CDP(shortcutTarget.webSocketDebuggerUrl);
+      await shortcutCdp.send("Runtime.enable");
+      const initialState = await waitFor(
+        async () => {
+          const state = JSON.parse(
+            await evaluate(
+              shortcutCdp,
+              `(() => {
+                const input = document.querySelector('[role="combobox"]');
+                const selected = document.querySelector('[role="option"][aria-selected="true"]');
+                const list = document.getElementById('tk-results');
+                input?.focus();
+                return JSON.stringify({
+                  selectedId: selected?.id ?? null,
+                  scrollTop: list?.scrollTop ?? null,
+                  focused: document.activeElement === input,
+                });
+              })()`
+            )
+          );
+          return state.selectedId ? state : null;
+        },
+        { timeoutMs: 5000, intervalMs: 100, label: "fresh palette selection" }
+      );
+      if (initialState.selectedId !== `tk-result-tab-${shortcutTargetId}`) {
+        throw new Error(`expected newest tab ${shortcutTargetId}, got ${initialState.selectedId}`);
+      }
+      if (initialState.scrollTop !== 0 || !initialState.focused) {
+        throw new Error(`palette did not start at top and focused: ${JSON.stringify(initialState)}`);
+      }
+
+      await shortcutCdp.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key: "w",
+        code: "KeyW",
+        modifiers: 1,
+      });
+      await shortcutCdp.send("Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: "w",
+        code: "KeyW",
+        modifiers: 1,
+      });
+      await waitFor(
+        async () =>
+          evaluate(
+            sw,
+            `(async () => {
+              try { await chrome.tabs.get(${shortcutTargetId}); return false; }
+              catch { return true; }
+            })()`
+          ),
+        { timeoutMs: 3000, intervalMs: 100, label: "Alt+W to close highlighted tab" }
+      );
+      shortcutCdp.close();
+      results.push({ name: "fresh palette selects newest tab and Alt+W closes it", ok: true });
+    } catch (err) {
+      results.push({
+        name: "fresh palette selects newest tab and Alt+W closes it",
+        ok: false,
+        error: (err as Error).message,
+      });
+    }
+
+    /* ------------- TEST 4: native Split View handoff, no windows ------------ */
+    try {
+      const splitGuideSetup = JSON.parse(
+        await evaluate(
+          sw,
+          `(async () => {
+            const [origin] = await chrome.tabs.query({ url: "${testUrl}" });
+            await chrome.tabs.update(origin.id, { active: true });
+            const selected = await chrome.tabs.create({
+              windowId: origin.windowId,
+              url: "${testUrl}?native-split-selected=1",
+              active: false,
+            });
+            const contextId = "preview-native-split-smoke";
+            const paletteUrl = chrome.runtime.getURL("popup/index.html?standalone=1&context=" + contextId);
+            await chrome.storage.local.set({
+              [contextId]: {
+                returnToTabId: origin.id,
+                returnToWindowId: origin.windowId,
+                createdAt: Date.now(),
+              },
+            });
+            await chrome.tabs.create({ windowId: origin.windowId, url: paletteUrl, active: true });
+            const windows = await chrome.windows.getAll();
+            return JSON.stringify({
+              originId: origin.id,
+              selectedId: selected.id,
+              paletteUrl,
+              windowIds: windows.map((window) => window.id).sort(),
+            });
+          })()`
+        )
+      );
+      const splitGuideTarget = await waitFor(
+        async () => {
+          const list = await jsonList(port);
+          return list.find((target) => target.type === "page" && target.url === splitGuideSetup.paletteUrl);
+        },
+        { timeoutMs: 5000, intervalMs: 100, label: "native Split View guide palette" }
+      );
+      if (!splitGuideTarget.webSocketDebuggerUrl) throw new Error("split guide target has no debugger URL");
+      const splitGuideCdp = new CDP(splitGuideTarget.webSocketDebuggerUrl);
+      await splitGuideCdp.send("Runtime.enable");
+      const selectedState = await waitFor(
+        async () => {
+          const state = JSON.parse(
+            await evaluate(
+              splitGuideCdp,
+              `(() => {
+                const input = document.querySelector('[role="combobox"]');
+                const selected = document.querySelector('[role="option"][aria-selected="true"]');
+                input?.focus();
+                return JSON.stringify({ selectedId: selected?.id ?? null, focused: document.activeElement === input });
+              })()`
+            )
+          );
+          return state.selectedId ? state : null;
+        },
+        { timeoutMs: 5000, intervalMs: 100, label: "native Split View selected row" }
+      );
+      if (selectedState.selectedId !== `tk-result-tab-${splitGuideSetup.selectedId}` || !selectedState.focused) {
+        throw new Error(`wrong Split View guide target: ${JSON.stringify(selectedState)}`);
+      }
+
+      await splitGuideCdp.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key: "/",
+        code: "Backslash",
+        modifiers: 5,
+      });
+      await splitGuideCdp.send("Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: "/",
+        code: "Backslash",
+        modifiers: 5,
+      });
+
+      await waitFor(
+        async () => {
+          const list = await jsonList(port);
+          return !list.some((target) => target.id === splitGuideTarget.id);
+        },
+        { timeoutMs: 3000, intervalMs: 100, label: "Split View guide palette to close" }
+      );
+      const hintText = await waitFor(
+        async () => {
+          const text = await evaluate(
+            page,
+            `document.getElementById("tabknight-split-view-hint")?.shadowRoot?.textContent ?? ""`
+          );
+          return text.includes("⌘⌥N") ? text : null;
+        },
+        { timeoutMs: 3000, intervalMs: 100, label: "native Split View instruction" }
+      );
+      const unchanged = JSON.parse(
+        await evaluate(
+          sw,
+          `(async () => {
+            const [origin, selected, windows] = await Promise.all([
+              chrome.tabs.get(${splitGuideSetup.originId}),
+              chrome.tabs.get(${splitGuideSetup.selectedId}),
+              chrome.windows.getAll(),
+            ]);
+            return JSON.stringify({
+              sameWindow: origin.windowId === selected.windowId,
+              windowIds: windows.map((window) => window.id).sort(),
+            });
+          })()`
+        )
+      );
+      if (!hintText.includes("Chrome Split View") || !unchanged.sameWindow) {
+        throw new Error(`native Split View handoff incomplete: ${JSON.stringify({ hintText, unchanged })}`);
+      }
+      if (JSON.stringify(unchanged.windowIds) !== JSON.stringify(splitGuideSetup.windowIds)) {
+        throw new Error(`Split View guide changed browser windows: ${JSON.stringify(unchanged)}`);
+      }
+      splitGuideCdp.close();
+      results.push({ name: "Cmd+Option+\\ guides native Split View without changing windows", ok: true });
+    } catch (err) {
+      results.push({
+        name: "Cmd+Option+\\ guides native Split View without changing windows",
+        ok: false,
+        error: (err as Error).message,
+      });
+    }
+
+    /* -------------------- TEST 5: forged lifecycle ignored -------------------- */
     try {
       await evaluate(
         page,
@@ -673,15 +916,18 @@ async function main(): Promise<number> {
       await sleep(1000);
       const mounted = await evaluate(
         optionsCdp,
-        `document.getElementById("root")?.children.length > 0 && !!document.querySelector('input[name="preview-text"][value="always-hide"]:checked')`
+        `document.getElementById("root")?.children.length > 0
+          && !!document.querySelector('input[name="preview-text"][value="always-show"]:checked')
+          && !!document.querySelector('input[name="accent"][value="zinc"]:checked')
+          && document.documentElement.dataset.accent === "zinc"`
       );
-      if (!mounted) throw new Error("options page #root has no children");
-      results.push({ name: "options page loads and mounts", ok: true });
+      if (!mounted) throw new Error("options page did not mount with rich previews and zinc accent defaults");
+      results.push({ name: "options page loads with zinc accent default", ok: true });
       optionsCdp.close();
       await browser?.send("Target.closeTarget", { targetId: target.id });
     } catch (err) {
       results.push({
-        name: "options page loads and mounts",
+        name: "options page loads with zinc accent default",
         ok: false,
         error: (err as Error).message,
       });
@@ -817,7 +1063,7 @@ async function main(): Promise<number> {
   console.log("");
   console.log(`mode: ${mode}, runtime: ${(runtimeMs / 1000).toFixed(1)}s`);
 
-  const allPassed = results.length === 8 && results.every((r) => r.ok);
+  const allPassed = results.length === 10 && results.every((r) => r.ok);
   return allPassed ? 0 : 1;
 }
 

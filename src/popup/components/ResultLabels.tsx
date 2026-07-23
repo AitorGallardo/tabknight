@@ -9,10 +9,10 @@ export function ResultLabels({ active, source = "Tab", action = "Switch" }: Resu
   return (
     <span className="flex shrink-0 items-center gap-1" aria-hidden="true">
       <span
-        className={`rounded-[4px] border px-1.5 py-0.5 text-[9px] font-semibold uppercase leading-none tracking-[0.06em] ${
+        className={`rounded-[4px] px-1.5 py-0.5 text-[9px] font-semibold uppercase leading-none tracking-[0.06em] ${
           active
-            ? "border-white/35 bg-white/15 text-white/90"
-            : "border-black/10 bg-black/[0.035] text-black/45 dark:border-white/10 dark:bg-white/[0.04] dark:text-white/40"
+            ? "bg-white/15 text-white/90"
+            : "bg-black/[0.035] text-black/45 dark:bg-white/[0.04] dark:text-white/40"
         }`}
       >
         {source}
