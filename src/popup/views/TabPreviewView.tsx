@@ -123,8 +123,6 @@ const THUMB_CACHE_MAX = 12;
 const THUMB_PREFETCH_CONCURRENCY = 3;
 /** Approximate box height reserved before a row mounts (content-visibility). */
 const ROW_CONTAIN_SIZE = "0 36px";
-/** Rows with a domain subtitle (duplicate titles) render a second line — reserve more height. */
-const ROW_CONTAIN_SIZE_DUPLICATE = "0 44px";
 /** Only pay the content-visibility bookkeeping cost once lists get long. */
 const CONTENT_VISIBILITY_THRESHOLD = 60;
 
@@ -330,7 +328,7 @@ function HeroTypographicCard({ tab, card }: { tab: NavigatorTab; card?: ContentC
       <div className="relative">
         <div className="mb-3 flex items-center gap-2">
           <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md bg-white/[0.08]">
-            <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={24} className="h-full w-full" />
+            <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={18} />
           </span>
           <span className="truncate text-[12px] font-medium tracking-[-0.01em] text-white/55">{siteName}</span>
         </div>
@@ -785,14 +783,6 @@ export function TabPreviewView({
       for (const { tab } of entries) byTabId.set(tab.id, entries);
     }
     return byTabId;
-  }, [orderedTabs]);
-
-  // Rows sharing a title (e.g. several GitHub PRs, several Google Docs) get a
-  // domain hint appended so they stay distinguishable at a glance.
-  const duplicateTitleCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const tab of orderedTabs) counts.set(tab.title, (counts.get(tab.title) ?? 0) + 1);
-    return counts;
   }, [orderedTabs]);
 
   // Audio Playground rail — sticky-audio tabs, filtered by the same search query.
@@ -1809,11 +1799,11 @@ export function TabPreviewView({
                       className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:bg-white/[0.12]"
                     >
                       <span
-                        className={`grid h-5 w-5 shrink-0 place-items-center overflow-hidden rounded-[5px] ${
+                        className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-[6px] ${
                           active ? "bg-white/20" : "bg-white/[0.08] text-white/80"
                         }`}
                       >
-                        <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={24} className="h-full w-full" />
+                        <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={18} />
                       </span>
                       <AudioEq playing={playing} />
                       <span className="min-w-0 flex-1">
@@ -1924,7 +1914,7 @@ export function TabPreviewView({
                   const url = item.type === "tab" ? item.tab.url : item.url;
                   const icon =
                     item.type === "tab" ? (
-                      <Favicon pageUrl={item.tab.url} favIconUrl={item.tab.favIconUrl} size={24} className="h-full w-full" />
+                      <Favicon pageUrl={item.tab.url} favIconUrl={item.tab.favIconUrl} size={18} />
                     ) : item.type === "bookmark" ? (
                       <Bookmark className="h-3.5 w-3.5" />
                     ) : item.type === "history" ? (
@@ -2040,7 +2030,7 @@ export function TabPreviewView({
                                 }`}
                               >
                                 <span className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${pairActive ? "bg-white/20" : "bg-white/[0.10]"}`}>
-                                  <Favicon pageUrl={pairTab.url} favIconUrl={pairTab.favIconUrl} size={24} className="h-full w-full" />
+                                  <Favicon pageUrl={pairTab.url} favIconUrl={pairTab.favIconUrl} size={18} />
                                 </span>
                                 <span className="min-w-0 flex-1 pr-3">
                                   <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">{pairTab.title}</span>
@@ -2095,7 +2085,6 @@ export function TabPreviewView({
                   }
 
                   const active = resultIndex === activeIndex;
-                  const isDuplicateTitle = (duplicateTitleCounts.get(tab.title) ?? 0) > 1;
                   // Entrance stagger only on the featured rail's first-ever
                   // paint (never on re-rank) and only the first 8 rows, so a
                   // long "Recent" + "Most visited" combo doesn't tail off
@@ -2113,6 +2102,7 @@ export function TabPreviewView({
                         ref={registerItem(resultIndex)}
                         id={resultDomId({ kind: "intent", id: `tab:${tab.id}`, intent: { type: "tab", key: `tab:${tab.id}`, sourceLabel: "Open tab", actionLabel: "Switch to tab", score: 0, tab } })}
                         role="option"
+                        data-result-kind="tab"
                         aria-selected={active}
                         type="button"
                         onMouseEnter={() => setActiveIndex(resultIndex)}
@@ -2121,13 +2111,13 @@ export function TabPreviewView({
                           ...(orderedTabs.length > CONTENT_VISIBILITY_THRESHOLD
                             ? {
                                 contentVisibility: "auto",
-                                containIntrinsicSize: isDuplicateTitle || tab.splitPartnerTitle ? ROW_CONTAIN_SIZE_DUPLICATE : ROW_CONTAIN_SIZE,
+                                containIntrinsicSize: ROW_CONTAIN_SIZE,
                               }
                             : undefined),
                           ...(showEntrance ? { animationDelay: `${index * 18}ms` } : undefined),
                         }}
                         aria-label={`${tab.title}. Open tab. Switch.${tab.isOrigin ? " Current view." : ""}${tab.splitPartnerTitle ? ` Split with ${tab.splitPartnerTitle}.` : ""}${tab.pinned ? " Pinned." : ""}${tab.audible ? " Playing audio." : ""}${tab.muted ? " Muted." : ""}${tab.discarded ? " Discarded." : ""}`}
-                        className={`flex w-full items-center gap-2 rounded-[9px] px-2 py-1 text-left transition-colors duration-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.70)] ${showEntrance ? "tk-row-in" : ""} ${pairingTabId === tab.id ? "tk-pairing" : ""} ${
+                        className={`flex h-9 w-full items-center gap-2 rounded-[9px] px-2 text-left transition-colors duration-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-[hsl(var(--tk-accent)/0.70)] ${showEntrance ? "tk-row-in" : ""} ${pairingTabId === tab.id ? "tk-pairing" : ""} ${
                           active
                             ? "bg-[hsl(var(--tk-accent-solid))] text-[hsl(var(--tk-accent-foreground))]"
                             : isFeatured
@@ -2136,23 +2126,17 @@ export function TabPreviewView({
                         } ${tab.discarded ? "opacity-[0.55]" : ""}`}
                       >
                         <span
-                          className={`grid h-5 w-5 shrink-0 place-items-center overflow-hidden rounded-[5px] ${
+                          data-favicon-frame
+                          className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-[6px] ${
                             active ? "bg-white/20" : "bg-white/[0.08] text-white/80"
                           }`}
                         >
-                          <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={24} className="h-full w-full" />
+                          <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={18} />
                         </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">
+                        <span data-tab-copy className="min-w-0 flex-1">
+                          <span data-tab-title className="block truncate text-[13px] font-medium tracking-[-0.01em]">
                             {highlightTitle(tab.title, query, active)}
                           </span>
-                          {(isDuplicateTitle || tab.splitPartnerTitle) && (
-                            <span className={`block truncate text-[11px] ${active ? "text-white/85" : "text-black/50 dark:text-white/45"}`}>
-                              {tab.splitPartnerTitle
-                                ? `${tab.isOrigin ? "Current view · " : ""}Split with ${tab.splitPartnerTitle}`
-                                : domainOf(tab.url)}
-                            </span>
-                          )}
                         </span>
                         {pairingTabId === tab.id ? (
                           <Columns2 className="h-3.5 w-3.5 shrink-0 text-white" aria-hidden="true" />

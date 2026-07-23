@@ -498,6 +498,11 @@ async function main(): Promise<number> {
               const combo = document.querySelector('[role="combobox"]');
               const selected = document.querySelector('[role="option"][aria-selected="true"]');
               const selectedStyle = selected ? getComputedStyle(selected) : null;
+              const tabRows = Array.from(document.querySelectorAll('[data-result-kind="tab"]')).slice(0, 5);
+              const faviconFrame = tabRows[0]?.querySelector('[data-favicon-frame]');
+              const faviconImage = faviconFrame?.querySelector('img');
+              const frameRect = faviconFrame?.getBoundingClientRect();
+              const imageRect = faviconImage?.getBoundingClientRect();
               const audioControl = Array.from(document.querySelectorAll('button')).find((el) => el.textContent?.includes('Audio'));
               audioControl?.focus();
               const nativeEnter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
@@ -514,6 +519,16 @@ async function main(): Promise<number> {
                 selectedBackground: selectedStyle?.backgroundColor ?? null,
                 selectedBoxShadow: selectedStyle?.boxShadow ?? null,
                 selectedBorderWidth: selectedStyle?.borderWidth ?? null,
+                tabRowHeights: tabRows.map((row) => row.getBoundingClientRect().height),
+                singleLineTabRows: tabRows.length >= 2 && tabRows.every((row) => row.querySelector('[data-tab-copy]')?.children.length === 1),
+                faviconFrame: frameRect && imageRect ? {
+                  frame: [frameRect.width, frameRect.height],
+                  image: [imageRect.width, imageRect.height],
+                  centerDelta: [
+                    Math.abs((frameRect.left + frameRect.width / 2) - (imageRect.left + imageRect.width / 2)),
+                    Math.abs((frameRect.top + frameRect.height / 2) - (imageRect.top + imageRect.height / 2)),
+                  ],
+                } : null,
                 noHorizontalOverflow: document.documentElement.scrollWidth <= innerWidth,
                 viewport: [innerWidth, innerHeight],
               });
@@ -536,6 +551,12 @@ async function main(): Promise<number> {
           !state.commandHint ||
           state.selectedBoxShadow !== "none" ||
           state.selectedBorderWidth !== "0px" ||
+          !state.singleLineTabRows ||
+          state.tabRowHeights.some((height) => Math.abs(height - 36) > 0.5) ||
+          !state.faviconFrame ||
+          state.faviconFrame.frame.some((size) => Math.abs(size - 24) > 0.5) ||
+          state.faviconFrame.image.some((size) => Math.abs(size - 18) > 0.5) ||
+          state.faviconFrame.centerDelta.some((delta) => delta > 0.5) ||
           !state.noHorizontalOverflow ||
           state.viewport[0] !== scenario.width ||
           state.viewport[1] !== scenario.height

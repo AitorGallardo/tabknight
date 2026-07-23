@@ -64,11 +64,11 @@ export function Favicon({ pageUrl, favIconUrl, size = 20, className }: FaviconPr
   const src = tier === 1 ? favIconUrl : faviconCacheUrl(pageUrl, size);
 
   return (
-    <span className={cn("block overflow-hidden rounded-[inherit]", className)} style={style}>
+    <span className={cn("grid place-items-center overflow-hidden rounded-[inherit]", className)} style={style}>
       <img
         src={src}
         alt=""
-        className="h-full w-full object-cover"
+        className="block h-full w-full object-contain"
         onError={() => setTier((t) => (t === 1 ? 2 : 3))}
       />
     </span>

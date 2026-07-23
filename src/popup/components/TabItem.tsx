@@ -32,7 +32,7 @@ export function TabItem({ tab, selected, onToggle, cursor = false, itemRef }: Ta
         )}
       />
       <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md bg-white/[0.08] text-white/80">
-        <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={24} className="h-full w-full object-cover" />
+        <Favicon pageUrl={tab.url} favIconUrl={tab.favIconUrl} size={18} />
       </span>
       <span
         className="flex-1 truncate text-[13px] font-medium tracking-[-0.01em]"

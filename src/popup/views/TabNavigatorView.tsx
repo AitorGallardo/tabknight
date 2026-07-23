@@ -324,7 +324,7 @@ export function TabNavigatorView({
               >
                 <span className={`grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md ${tileClass}`}>
                   {item.type === "tab" ? (
-                    <Favicon pageUrl={item.tab.url} favIconUrl={item.tab.favIconUrl} size={24} className="h-full w-full object-cover" />
+                    <Favicon pageUrl={item.tab.url} favIconUrl={item.tab.favIconUrl} size={18} />
                   ) : item.type === "bookmark" ? <Bookmark className="h-3.5 w-3.5" /> : item.type === "history" ? <Clock3 className="h-3.5 w-3.5" /> : item.type === "search" ? <Search className="h-3.5 w-3.5" /> : <Globe2 className="h-3.5 w-3.5" />}
                 </span>
                 <span className="min-w-0 flex-1">
