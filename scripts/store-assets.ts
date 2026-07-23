@@ -5,6 +5,7 @@
  * Produces store-ready PNGs in chrome_web_store/images/:
  *   - 4 screenshots at 1280x800 (real captures of the running extension)
  *   - a small promo tile (440x280) and a marquee tile (1400x560)
+ *   - an MP4 + GIF walkthrough of the live command surface
  *
  * How the real screenshots are captured:
  *   The flagship surface is the Cmd+K in-page overlay — an extension-origin
@@ -218,6 +219,129 @@ async function captureTarget(
   await sips.exited;
 }
 
+async function captureDemo(
+  pageTarget: JsonListEntry,
+  iframeTarget: JsonListEntry,
+  framesDir: string,
+  mp4Path: string,
+  gifPath: string
+): Promise<void> {
+  if (!pageTarget.webSocketDebuggerUrl || !iframeTarget.webSocketDebuggerUrl) {
+    throw new Error("Demo targets are missing debugger URLs");
+  }
+
+  mkdirSync(framesDir, { recursive: true });
+  const page = new CDP(pageTarget.webSocketDebuggerUrl);
+  const palette = new CDP(iframeTarget.webSocketDebuggerUrl);
+  await page.send("Page.enable");
+  await page.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await palette.send("Runtime.enable");
+
+  let frame = 0;
+  const snap = async (count: number): Promise<void> => {
+    for (let i = 0; i < count; i++) {
+      const shot = await page.send("Page.captureScreenshot", {
+        format: "png",
+        captureBeyondViewport: false,
+        fromSurface: true,
+      });
+      const path = join(framesDir, `frame-${String(frame++).padStart(4, "0")}.png`);
+      await Bun.write(path, Buffer.from(shot.data, "base64"));
+      await sleep(45);
+    }
+  };
+
+  const setQuery = async (value: string): Promise<void> => {
+    await evaluate(
+      palette,
+      `(() => {
+        const input = document.querySelector('input[aria-label="Search tabs, bookmarks, history, or the web"]');
+        if (!input) return false;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+        setter.call(input, ${JSON.stringify(value)});
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.focus();
+        return true;
+      })()`
+    );
+  };
+
+  const press = async (key: string, code: string, keyCode: number): Promise<void> => {
+    await palette.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key,
+      code,
+      windowsVirtualKeyCode: keyCode,
+      nativeVirtualKeyCode: keyCode,
+    });
+    await palette.send("Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key,
+      code,
+      windowsVirtualKeyCode: keyCode,
+      nativeVirtualKeyCode: keyCode,
+    });
+  };
+
+  await setQuery("");
+  await snap(14);
+  for (const query of ["w", "wi", "wik", "wiki"]) {
+    await setQuery(query);
+    await snap(3);
+  }
+  await snap(10);
+  await press("ArrowDown", "ArrowDown", 40);
+  await snap(7);
+  await press("ArrowDown", "ArrowDown", 40);
+  await snap(7);
+  await setQuery(">");
+  await snap(14);
+  await setQuery("> split");
+  await snap(14);
+  await setQuery("");
+  await snap(10);
+
+  page.close();
+  palette.close();
+
+  const encodeMp4 = Bun.spawn(
+    [
+      "ffmpeg", "-y", "-loglevel", "error", "-framerate", "12",
+      "-i", join(framesDir, "frame-%04d.png"),
+      "-c:v", "libx264", "-preset", "slow", "-crf", "18",
+      "-pix_fmt", "yuv420p", "-movflags", "+faststart", mp4Path,
+    ],
+    { stdout: "ignore", stderr: "inherit" }
+  );
+  if ((await encodeMp4.exited) !== 0) throw new Error("Failed to encode showcase MP4");
+
+  const palettePath = join(framesDir, "palette.png");
+  const makePalette = Bun.spawn(
+    [
+      "ffmpeg", "-y", "-loglevel", "error", "-i", mp4Path,
+      "-vf", "fps=10,scale=900:-1:flags=lanczos,palettegen=stats_mode=diff",
+      palettePath,
+    ],
+    { stdout: "ignore", stderr: "inherit" }
+  );
+  if ((await makePalette.exited) !== 0) throw new Error("Failed to create GIF palette");
+
+  const encodeGif = Bun.spawn(
+    [
+      "ffmpeg", "-y", "-loglevel", "error", "-i", mp4Path, "-i", palettePath,
+      "-lavfi", "fps=10,scale=900:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3",
+      "-loop", "0", gifPath,
+    ],
+    { stdout: "ignore", stderr: "inherit" }
+  );
+  if ((await encodeGif.exited) !== 0) throw new Error("Failed to encode showcase GIF");
+}
+
 /* ------------------------------- HTML assets ------------------------------ */
 
 const ICON_DATA_URI = `data:image/png;base64,${readFileSync(ICON_PATH).toString("base64")}`;
@@ -227,9 +351,9 @@ function brandBackground(): string {
   return `
     background:#05060a;
     background-image:
-      radial-gradient(1100px 720px at 78% -10%, rgba(113,113,122,0.30), transparent 60%),
-      radial-gradient(900px 620px at 12% 108%, rgba(161,161,170,0.22), transparent 62%),
-      radial-gradient(760px 520px at 92% 96%, rgba(82,82,91,0.24), transparent 60%),
+      radial-gradient(1100px 720px at 78% -10%, rgba(255,99,99,0.24), transparent 60%),
+      radial-gradient(900px 620px at 12% 108%, rgba(215,40,40,0.18), transparent 62%),
+      radial-gradient(760px 520px at 92% 96%, rgba(113,113,122,0.20), transparent 60%),
       linear-gradient(180deg,#080a12,#04050a);
   `;
 }
@@ -245,8 +369,8 @@ const BACKDROP_HTML = `<!doctype html><html><head><meta charset="utf-8">
     background-size:26px 26px;
     -webkit-mask-image:radial-gradient(circle at 50% 42%, black 8%, transparent 70%);}
   .glow{position:fixed;border-radius:50%;filter:blur(60px);}
-  .g1{width:520px;height:520px;left:60%;top:-14%;background:rgba(113,113,122,.32);}
-  .g2{width:460px;height:460px;left:-8%;top:58%;background:rgba(161,161,170,.24);}
+  .g1{width:520px;height:520px;left:60%;top:-14%;background:rgba(255,99,99,.24);}
+  .g2{width:460px;height:460px;left:-8%;top:58%;background:rgba(215,40,40,.18);}
   h1{position:fixed;left:8%;top:24%;margin:0;font-size:112px;line-height:1;letter-spacing:-.04em;
      font-weight:800;color:rgba(255,255,255,.06);}
   p{position:fixed;left:8.4%;top:46%;margin:0;font-size:26px;letter-spacing:-.01em;color:rgba(255,255,255,.05);}
@@ -274,8 +398,8 @@ function tileHtml(wide: boolean): string {
     background-size:${wide ? 30 : 20}px ${wide ? 30 : 20}px;
     -webkit-mask-image:radial-gradient(circle at 72% 30%, black 4%, transparent 66%);}
   .glow{position:fixed;border-radius:50%;filter:blur(${wide ? 80 : 46}px);}
-  .g1{width:${wide ? 620 : 300}px;height:${wide ? 620 : 300}px;right:-6%;top:-38%;background:rgba(113,113,122,.34);}
-  .g2{width:${wide ? 520 : 240}px;height:${wide ? 520 : 240}px;left:-8%;bottom:-46%;background:rgba(82,82,91,.28);}
+  .g1{width:${wide ? 620 : 300}px;height:${wide ? 620 : 300}px;right:-6%;top:-38%;background:rgba(255,99,99,.28);}
+  .g2{width:${wide ? 520 : 240}px;height:${wide ? 520 : 240}px;left:-8%;bottom:-46%;background:rgba(215,40,40,.20);}
   .wrap{position:relative;display:flex;align-items:center;gap:${wide ? 44 : 22}px;padding:0 ${pad}px;width:100%;}
   .logo{width:${iconSize}px;height:${iconSize}px;flex:0 0 auto;border-radius:${wide ? 30 : 18}px;
     box-shadow:0 24px 60px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.08) inset;}
@@ -283,7 +407,7 @@ function tileHtml(wide: boolean): string {
   .brand{display:flex;align-items:baseline;gap:${wide ? 20 : 11}px;}
   h1{margin:0;font-size:${title}px;line-height:.98;letter-spacing:-.045em;font-weight:800;
     color:#fff;text-shadow:0 2px 24px rgba(0,0,0,.5);}
-  h1 b{color:#d4d4d8;font-weight:800;}
+  h1 b{color:#ff6363;font-weight:800;}
   .kbd{display:inline-flex;gap:${wide ? 8 : 5}px;transform:translateY(-${wide ? 10 : 5}px);}
   .kbd span{font-size:${keycap}px;font-weight:700;color:#dbe9ff;
     padding:${wide ? "6px 14px" : "3px 8px"};border-radius:${wide ? 12 : 8}px;
@@ -317,10 +441,10 @@ function popupStageHtml(popupPng: string): string {
     background-image:radial-gradient(circle at 1px 1px, rgba(255,255,255,.26) 1px, transparent 0);
     background-size:28px 28px;-webkit-mask-image:radial-gradient(circle at 30% 40%, black 6%, transparent 70%);}
   .glow{position:fixed;border-radius:50%;filter:blur(70px);}
-  .g1{width:520px;height:520px;right:2%;top:-30%;background:rgba(113,113,122,.30);}
+  .g1{width:520px;height:520px;right:2%;top:-30%;background:rgba(255,99,99,.24);}
   .copy{max-width:420px;}
   .copy h2{margin:0;font-size:52px;line-height:1.02;letter-spacing:-.03em;font-weight:800;color:#fff;}
-  .copy h2 b{color:#d4d4d8;}
+  .copy h2 b{color:#ff6363;}
   .copy p{margin:20px 0 0;font-size:21px;line-height:1.45;color:rgba(226,236,255,.78);font-weight:500;}
   .shot{width:400px;height:500px;border-radius:22px;overflow:hidden;
     box-shadow:0 40px 100px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.10);}
@@ -424,6 +548,7 @@ async function main(): Promise<number> {
     const extensionId = new URL(sw!.url).hostname;
     const swCdp = new CDP(sw!.webSocketDebuggerUrl!);
     await swCdp.send("Runtime.enable");
+    await evaluate(swCdp, `chrome.storage.local.set({ accentPreference: "raycast" })`);
     console.log(`extension loaded: ${extensionId}`);
 
     // Open the real rich pages as background tabs so the background harvests
@@ -487,9 +612,14 @@ async function main(): Promise<number> {
     );
     await sleep(800);
 
+    const captureInvocationId = `store-assets-${Date.now()}`;
     const toggleExpr = `(async () => {
       const [tab] = await chrome.tabs.query({ url: "${BACKDROP_URL}" });
-      const res = await chrome.tabs.sendMessage(tab.id, { type: "PREVIEW_OVERLAY_TOGGLE" });
+      const res = await chrome.tabs.sendMessage(tab.id, {
+        type: "PREVIEW_OVERLAY_TOGGLE",
+        invocationId: "${captureInvocationId}",
+        startedAt: Date.now()
+      });
       return JSON.stringify(res);
     })()`;
 
@@ -503,7 +633,10 @@ async function main(): Promise<number> {
         const probe = new CDP(t.webSocketDebuggerUrl);
         try {
           await probe.send("Runtime.enable");
-          const ok = await evaluate(probe, `!!document.querySelector('input[aria-label="Search tabs"]')`);
+          const ok = await evaluate(
+            probe,
+            `!!document.querySelector('input[aria-label="Search tabs, bookmarks, history, or the web"]')`
+          );
           probe.close();
           return ok ? t : null;
         } catch {
@@ -531,7 +664,7 @@ async function main(): Promise<number> {
     await evaluate(
       typer,
       `(() => {
-        const input = document.querySelector('input[aria-label="Search tabs"]');
+        const input = document.querySelector('input[aria-label="Search tabs, bookmarks, history, or the web"]');
         const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
         setter.call(input, "wiki");
         input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -545,6 +678,15 @@ async function main(): Promise<number> {
     await captureTarget(heroPage, { width: 1280, height: 800, outPath: shot2, settleMs: 500 });
     produced.push(shot2);
     console.log("captured screenshot-2-search");
+
+    /* --------------------- LIVE DEMO: search + commands --------------------- */
+    const docsDir = join(REPO_ROOT, "docs", "screenshots");
+    mkdirSync(docsDir, { recursive: true });
+    const demoMp4 = join(docsDir, "demo.mp4");
+    const demoGif = join(docsDir, "demo.gif");
+    await captureDemo(heroPage, iframeTarget, join(userDataDir, "demo-frames"), demoMp4, demoGif);
+    produced.push(demoMp4, demoGif);
+    console.log("captured demo.mp4 + demo.gif");
 
     // Close the overlay.
     await evaluate(swCdp, toggleExpr).catch(() => {});
