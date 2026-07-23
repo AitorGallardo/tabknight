@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { ScrollInsets } from "./useListNavigation";
+import { visibleItemScrollTop } from "../lib/list-scroll";
 
 const DEFAULT_SCROLL_INSETS: ScrollInsets = { top: 8, bottom: 8 };
 
@@ -94,16 +95,19 @@ export function useRovingCursor({
     const list = listRef.current;
     const item = itemRefs.current[cursorIndex];
     if (!list || !item) return;
-    const itemTop = item.offsetTop;
-    const itemBottom = itemTop + item.offsetHeight;
-    if (itemTop < list.scrollTop + scrollInsets.top) {
-      list.scrollTop = Math.max(0, itemTop - scrollInsets.top);
-    } else if (itemBottom > list.scrollTop + list.clientHeight - scrollInsets.bottom) {
-      list.scrollTop = Math.min(
-        list.scrollHeight - list.clientHeight,
-        itemBottom - list.clientHeight + scrollInsets.bottom
-      );
-    }
+    const listRect = list.getBoundingClientRect();
+    const itemRect = item.getBoundingClientRect();
+    list.scrollTop = visibleItemScrollTop({
+      scrollTop: list.scrollTop,
+      scrollHeight: list.scrollHeight,
+      clientHeight: list.clientHeight,
+      listTop: listRect.top,
+      listBottom: listRect.bottom,
+      itemTop: itemRect.top,
+      itemBottom: itemRect.bottom,
+      insetTop: scrollInsets.top,
+      insetBottom: scrollInsets.bottom,
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cursorIndex, itemCount]);
 

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TabKnight",
-  "version": "0.34.2",
+  "version": "0.34.3",
   "description": "Keyboard-first tab switcher: press one shortcut to search, preview, and jump between tabs in every window. All data stays local.",
   "permissions": [
     "tabs",
