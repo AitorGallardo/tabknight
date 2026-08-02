@@ -6,6 +6,8 @@
 
 **Keyboard-first tab navigation for Chrome — search, preview, and switch tabs without ever leaving the page.**
 
+**[Visit the TabKnight website →](https://tabknight-landingpage.vercel.app/)**
+
 [![Chrome Manifest V3](https://img.shields.io/badge/Chrome-Manifest_V3-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white)](https://developer.chrome.com/docs/extensions/mv3/intro/)
 [![Bun](https://img.shields.io/badge/Bun-000000?style=for-the-badge&logo=bun&logoColor=white)](https://bun.sh/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
